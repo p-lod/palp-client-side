@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PALP Browser (Testing)</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" >
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+  <header id="header">
+    <span id="app-title">PALP Browser (Testing)</span>
+    <div id="search-bar">
+      <input type="text" id="id-input" list="id-suggestions" placeholder="pompeii, athena, r4, …" autocomplete="off" spellcheck="false">
+      <datalist id="id-suggestions"></datalist>
+      <button type="submit" id="go-btn">Go</button>
+    </div>
+    <span id="current-id"></span>
+  </header>
+
+  <div id="grid">
+
+    <div class="panel" id="pane-top-left" data-pane-position="top-left">
+      <div class="panel-label" id="pane-label-top-left">Info</div>
+      <div class="panel-content" id="pane-slot-top-left" data-pane-slot="top-left">
+        <p class="placeholder">Loading…</p>
+      </div>
+    </div>
+
+    <div class="panel" id="pane-top-right" data-pane-position="top-right">
+      <div class="panel-label" id="pane-label-top-right">Map</div>
+      <div class="panel-content" id="pane-slot-top-right" data-pane-slot="top-right">
+        <p class="placeholder">Loading…</p>
+      </div>
+    </div>
+
+    <div class="panel" id="pane-bottom-left" data-pane-position="bottom-left">
+      <div class="panel-label" id="pane-label-bottom-left">Hierarchy</div>
+      <div class="panel-content" id="pane-slot-bottom-left" data-pane-slot="bottom-left">
+        <p class="placeholder">—</p>
+      </div>
+    </div>
+
+    <div class="panel" id="pane-bottom-right" data-pane-position="bottom-right">
+      <div class="panel-label" id="pane-label-bottom-right">Images</div>
+      <div class="panel-content" id="pane-slot-bottom-right" data-pane-slot="bottom-right">
+        <p class="placeholder">Loading…</p>
+      </div>
+    </div>
+
+    <div id="grid-divider"></div>
+
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="../ui.js"></script>
+</body>
+</html>
