@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>P-LOD Browser</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header id="header">
+    <span id="app-title">P-LOD Browser</span>
+    <div id="search-bar">
+      <input type="text" id="id-input" placeholder="pompeii, athena, r4, …" autocomplete="off" spellcheck="false">
+      <button id="go-btn">Go</button>
+    </div>
+    <span id="current-id"></span>
+  </header>
+
+  <div id="grid">
+
+    <div class="panel" id="panel-info">
+      <div class="panel-label">Info</div>
+      <div class="panel-content" id="info-content">
+        <p class="placeholder">Loading…</p>
+      </div>
+    </div>
+
+    <div class="panel" id="panel-map">
+      <div class="panel-label" id="map-label">Map</div>
+      <div id="map"></div>
+    </div>
+
+    <div class="panel" id="panel-images">
+      <div class="panel-label">Images</div>
+      <div class="panel-content" id="images-content">
+        <p class="placeholder">Loading…</p>
+      </div>
+    </div>
+
+    <div class="panel" id="panel-br">
+      <div class="panel-label">Details</div>
+      <div class="panel-content" id="br-content">
+        <p class="placeholder">—</p>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="ui.js"></script>
+</body>
+</html>
