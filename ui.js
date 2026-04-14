@@ -56,6 +56,48 @@ const typeaheadState = {
   loadingPromise: null,
 };
 
+const PANE_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
+const PANE_CONTENT_TYPES = {
+  INFO: 'info',
+  MAP: 'map',
+  IMAGES: 'images',
+  HIERARCHY_PLACEHOLDER: 'hierarchy-placeholder',
+};
+
+const DEFAULT_PANE_LAYOUT = Object.freeze({
+  'top-left': PANE_CONTENT_TYPES.INFO,
+  'top-right': PANE_CONTENT_TYPES.MAP,
+  'bottom-left': PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER,
+  'bottom-right': PANE_CONTENT_TYPES.IMAGES,
+});
+
+const LAYOUT_DEFAULTS_BY_RESOURCE_PROFILE = Object.freeze({
+  default: DEFAULT_PANE_LAYOUT,
+  concept: {
+    'top-left': PANE_CONTENT_TYPES.INFO,
+    'top-right': PANE_CONTENT_TYPES.MAP,
+    'bottom-left': PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER,
+    'bottom-right': PANE_CONTENT_TYPES.IMAGES,
+  },
+  spatial: {
+    'top-left': PANE_CONTENT_TYPES.INFO,
+    'top-right': PANE_CONTENT_TYPES.MAP,
+    'bottom-left': PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER,
+    'bottom-right': PANE_CONTENT_TYPES.IMAGES,
+  },
+});
+
+const PANE_CONTENT_META = Object.freeze({
+  [PANE_CONTENT_TYPES.INFO]: { label: 'Info' },
+  [PANE_CONTENT_TYPES.MAP]: { label: 'Map' },
+  [PANE_CONTENT_TYPES.IMAGES]: { label: 'Images' },
+  [PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER]: { label: 'Hierarchy' },
+});
+
+let currentPaneLayout = { ...DEFAULT_PANE_LAYOUT };
+let currentPaneLayoutOverride = null;
+let currentResourceProfile = 'default';
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 function normalizeId(raw) {
@@ -299,6 +341,127 @@ function isTypeaheadSelectionEvent(evt) {
     && evt.inputType === 'insertReplacementText';
 }
 
+function clonePaneLayout(layout) {
+  return {
+    'top-left': layout['top-left'],
+    'top-right': layout['top-right'],
+    'bottom-left': layout['bottom-left'],
+    'bottom-right': layout['bottom-right'],
+  };
+}
+
+function isKnownPaneContentType(contentType) {
+  return Object.prototype.hasOwnProperty.call(PANE_CONTENT_META, contentType);
+}
+
+function isValidPaneLayout(layout) {
+  if (!layout || typeof layout !== 'object') return false;
+
+  const used = new Set();
+  for (const pos of PANE_POSITIONS) {
+    const contentType = layout[pos];
+    if (!isKnownPaneContentType(contentType)) return false;
+    if (used.has(contentType)) return false;
+    used.add(contentType);
+  }
+
+  return used.size === PANE_POSITIONS.length;
+}
+
+function normalizePaneLayout(layout, fallbackLayout = DEFAULT_PANE_LAYOUT) {
+  if (!isValidPaneLayout(layout)) return clonePaneLayout(fallbackLayout);
+  return clonePaneLayout(layout);
+}
+
+function encodePaneLayout(layout) {
+  return PANE_POSITIONS.map(pos => `${pos}:${layout[pos]}`).join(',');
+}
+
+function parsePaneLayout(raw) {
+  if (!raw) return null;
+
+  const out = {};
+  const pairs = String(raw).split(',').map(s => s.trim()).filter(Boolean);
+  for (const pair of pairs) {
+    const idx = pair.indexOf(':');
+    if (idx < 1) return null;
+
+    const pos = pair.slice(0, idx).trim();
+    const contentType = pair.slice(idx + 1).trim();
+    if (!PANE_POSITIONS.includes(pos)) return null;
+    out[pos] = contentType;
+  }
+
+  return isValidPaneLayout(out) ? clonePaneLayout(out) : null;
+}
+
+function resolveResourceProfile(typeUrn) {
+  if (SPATIAL_TYPES.has(typeUrn)) return 'spatial';
+  if (typeUrn === 'urn:p-lod:id:concept') return 'concept';
+  return 'default';
+}
+
+function getDefaultPaneLayoutForProfile(profile) {
+  const fromProfile = LAYOUT_DEFAULTS_BY_RESOURCE_PROFILE[profile] || LAYOUT_DEFAULTS_BY_RESOURCE_PROFILE.default;
+  return normalizePaneLayout(fromProfile, DEFAULT_PANE_LAYOUT);
+}
+
+function resolvePaneLayout(typeUrn, overrideLayout) {
+  if (overrideLayout) {
+    return {
+      profile: resolveResourceProfile(typeUrn),
+      layout: normalizePaneLayout(overrideLayout, DEFAULT_PANE_LAYOUT),
+      fromOverride: true,
+    };
+  }
+
+  const profile = resolveResourceProfile(typeUrn);
+  return {
+    profile,
+    layout: getDefaultPaneLayoutForProfile(profile),
+    fromOverride: false,
+  };
+}
+
+function getPaneElements(position) {
+  return {
+    panel: document.getElementById(`pane-${position}`),
+    label: document.getElementById(`pane-label-${position}`),
+    slot: document.getElementById(`pane-slot-${position}`),
+  };
+}
+
+function getPanePositionForContent(layout, contentType) {
+  for (const pos of PANE_POSITIONS) {
+    if (layout[pos] === contentType) return pos;
+  }
+  return null;
+}
+
+function getPaneSlotForContent(layout, contentType) {
+  const pos = getPanePositionForContent(layout, contentType);
+  if (!pos) return null;
+  const els = getPaneElements(pos);
+  return els.slot;
+}
+
+function applyPaneLayout(layout) {
+  const normalized = normalizePaneLayout(layout, DEFAULT_PANE_LAYOUT);
+  currentPaneLayout = normalized;
+
+  for (const pos of PANE_POSITIONS) {
+    const paneEls = getPaneElements(pos);
+    const contentType = normalized[pos];
+    const label = (PANE_CONTENT_META[contentType] && PANE_CONTENT_META[contentType].label) || 'Pane';
+
+    if (paneEls.panel) paneEls.panel.dataset.paneContent = contentType;
+    if (paneEls.label) paneEls.label.textContent = label;
+    if (paneEls.slot) {
+      paneEls.slot.classList.toggle('is-map-slot', contentType === PANE_CONTENT_TYPES.MAP);
+    }
+  }
+}
+
 // ── Panel divider: persist col/row split ratios in URL ────────────────────────
 
 const MIN_PANE_RATIO = 0.2;  // 20% minimum for any column/row
@@ -307,12 +470,27 @@ const MAX_PANE_RATIO = 0.8;  // 80% maximum
 let currentColSplit = 0.5;  // left column width ratio
 let currentRowSplit = 0.5;  // top row height ratio
 
-function parseGridRatios() {
-  const params = new URLSearchParams(location.hash.split('?')[1] || '');
+function parseHashState() {
+  const rawHash = location.hash.slice(1);
+  const [encodedId, queryStr] = rawHash.split('?');
+  const id = encodedId ? decodeURIComponent(encodedId) : '';
+
+  const params = new URLSearchParams(queryStr || '');
   const col = parseFloat(params.get('col-split'));
   const row = parseFloat(params.get('row-split'));
-  if (!isNaN(col) && col > 0 && col < 1) currentColSplit = col;
-  if (!isNaN(row) && row > 0 && row < 1) currentRowSplit = row;
+  const layoutOverride = parsePaneLayout(params.get('layout'));
+
+  return {
+    id,
+    colSplit: !isNaN(col) && col > 0 && col < 1 ? col : null,
+    rowSplit: !isNaN(row) && row > 0 && row < 1 ? row : null,
+    layoutOverride,
+  };
+}
+
+function applyRatiosFromHashState(hashState) {
+  if (hashState && hashState.colSplit !== null) currentColSplit = hashState.colSplit;
+  if (hashState && hashState.rowSplit !== null) currentRowSplit = hashState.rowSplit;
 }
 
 function applyGridRatios() {
@@ -324,12 +502,19 @@ function applyGridRatios() {
   divider.style.top = `${currentRowSplit * 100}%`;
 }
 
-function updateUrlWithRatios() {
-  const hash = location.hash.split('?')[0].slice(1);
+function buildHash(id, layoutOverride = currentPaneLayoutOverride) {
+  const normalizedId = normalizeId(id || DEFAULT_ID);
   const params = new URLSearchParams();
   params.set('col-split', currentColSplit.toFixed(3));
   params.set('row-split', currentRowSplit.toFixed(3));
-  const newHash = `#${hash}?${params.toString()}`;
+  if (layoutOverride) params.set('layout', encodePaneLayout(layoutOverride));
+  return `#${encodeURIComponent(normalizedId)}?${params.toString()}`;
+}
+
+function updateUrlWithRatios() {
+  const hashState = parseHashState();
+  const currentId = hashState.id || DEFAULT_ID;
+  const newHash = buildHash(currentId, hashState.layoutOverride || currentPaneLayoutOverride);
   window.history.replaceState(null, '', newHash);
 }
 
@@ -371,11 +556,68 @@ function initDividerDrag() {
 
 let leafletMap  = null;
 let layerGroup  = null;
+let mapContainerEl = null;
+
+function ensureMapContainerInSlot(slotEl) {
+  if (!slotEl) return null;
+
+  if (!mapContainerEl) {
+    mapContainerEl = document.createElement('div');
+    mapContainerEl.id = 'map';
+  }
+
+  if (mapContainerEl.parentElement !== slotEl) {
+    slotEl.innerHTML = '';
+    slotEl.appendChild(mapContainerEl);
+  }
+
+  return mapContainerEl;
+}
+
+function ensureMapInitialized(slotEl) {
+  const container = ensureMapContainerInSlot(slotEl);
+  if (!container) return;
+
+  if (!leafletMap) {
+    leafletMap = L.map(container, { zoomControl: true });
+    L.tileLayer('http://palp.art/xyz-tiles/{z}/{x}/{y}.png', {
+      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      maxZoom: 19,
+    }).addTo(leafletMap);
+    layerGroup = L.layerGroup().addTo(leafletMap);
+    leafletMap.setView([40.7506, 14.4890], 15);
+  } else {
+    leafletMap.invalidateSize();
+  }
+}
+
+function clearMapLayers() {
+  if (layerGroup) layerGroup.clearLayers();
+}
+
+function renderPlaceholderInSlot(slotEl, text = '—') {
+  if (!slotEl) return;
+  slotEl.innerHTML = `<p class="placeholder">${escHtml(text)}</p>`;
+}
+
+function renderLoadingInSlot(slotEl, text = 'Loading…') {
+  if (!slotEl) return;
+  slotEl.innerHTML = `<p class="loading">${escHtml(text)}</p>`;
+}
+
+function renderHierarchyPlaceholder(slotEl, profile) {
+  if (!slotEl) return;
+
+  let msg = 'Hierarchy browser coming soon.';
+  if (profile === 'concept') msg = 'Concept hierarchy browser coming soon.';
+  if (profile === 'spatial') msg = 'Spatial hierarchy browser coming soon.';
+  slotEl.innerHTML = `<p class="placeholder">${escHtml(msg)}</p>`;
+}
 
 // ── Panel: Info ───────────────────────────────────────────────────────────────
 
-function renderInfo(triples) {
-  const el = document.getElementById('info-content');
+function renderInfo(triples, el) {
+  if (!el) return;
 
   if (!Object.keys(triples).length) {
     el.innerHTML = '<p class="placeholder">No information available.</p>';
@@ -444,8 +686,8 @@ async function resolveImageUrl(imgDict) {
   return { urn, url: null };
 }
 
-function renderImages(images) {
-  const el = document.getElementById('images-content');
+function renderImages(images, el) {
+  if (!el) return;
 
   if (!images || !images.length) {
     el.innerHTML = '<p class="placeholder">No images available.</p>';
@@ -498,8 +740,11 @@ function addGeoJsonLayer(item, styleOpts, clickable) {
   return layer;
 }
 
-function renderMap(selfItem, childItems, isSpatial, conceptDetailLevel = 'feature') {
-  layerGroup.clearLayers();
+function renderMap(selfItem, childItems, isSpatial, conceptDetailLevel, slotEl, labelEl) {
+  ensureMapInitialized(slotEl);
+  if (!leafletMap || !layerGroup) return;
+
+  clearMapLayers();
 
   const bounds = [];
 
@@ -531,12 +776,14 @@ function renderMap(selfItem, childItems, isSpatial, conceptDetailLevel = 'featur
     leafletMap.fitBounds(combined, { padding: [24, 24] });
   }
 
-  document.getElementById('map-label').textContent =
-    isSpatial
-      ? 'Map — spatial context'
-      : conceptDetailLevel === 'space'
-        ? 'Map — depicted in (space)'
-        : 'Map — depicted in (feature fallback)';
+  if (labelEl) {
+    labelEl.textContent =
+      isSpatial
+        ? 'Map — spatial context'
+        : conceptDetailLevel === 'space'
+          ? 'Map — depicted in (space)'
+          : 'Map — depicted in (feature fallback)';
+  }
 }
 
 async function fetchDepictedWhereByDetail(shortId, detailLevel) {
@@ -569,21 +816,26 @@ async function fetchDepictedWhereWithSpaceFallback(shortId) {
 
 function navigate(id) {
   const normalId = normalizeId(id);
-  const params = new URLSearchParams();
-  params.set('col-split', currentColSplit.toFixed(3));
-  params.set('row-split', currentRowSplit.toFixed(3));
-  location.hash = `${encodeURIComponent(normalId)}?${params.toString()}`;
+  location.hash = buildHash(normalId, currentPaneLayoutOverride);
 }
 
 async function loadEntity(rawId) {
   const id      = normalizeId(rawId);
   const shortId = extractShortId(id);
 
-  document.getElementById('current-id').textContent   = id;
-  document.getElementById('id-input').value           = shortId;
-  document.getElementById('info-content').innerHTML   = '<p class="loading">Loading…</p>';
-  document.getElementById('images-content').innerHTML = '<p class="loading">Loading…</p>';
-  layerGroup.clearLayers();
+  document.getElementById('current-id').textContent = id;
+  document.getElementById('id-input').value = shortId;
+
+  const provisionalLayout = normalizePaneLayout(currentPaneLayoutOverride || currentPaneLayout, DEFAULT_PANE_LAYOUT);
+  applyPaneLayout(provisionalLayout);
+  clearMapLayers();
+
+  renderLoadingInSlot(getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.INFO));
+  renderLoadingInSlot(getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES));
+  renderHierarchyPlaceholder(
+    getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER),
+    currentResourceProfile
+  );
 
   // Step 1: fetch metadata (we need the type to decide the map mode)
   let triples = {};
@@ -592,11 +844,19 @@ async function loadEntity(rawId) {
     if (r.ok) triples = flattenTriples(await r.json());
   } catch (_) { /* ignore */ }
 
-  renderInfo(triples);
-
   const typeUrn   = (triples['http://www.w3.org/1999/02/22-rdf-syntax-ns#type'] || [])[0] || '';
   const isSpatial = SPATIAL_TYPES.has(typeUrn);
   const selfGjStr = (triples['urn:p-lod:id:geojson'] || [])[0] || null;
+
+  const resolved = resolvePaneLayout(typeUrn, currentPaneLayoutOverride);
+  currentResourceProfile = resolved.profile;
+  applyPaneLayout(resolved.layout);
+
+  renderInfo(triples, getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.INFO));
+  renderHierarchyPlaceholder(
+    getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER),
+    currentResourceProfile
+  );
 
   // Step 2: parallel fetches — images + map children
   const [imagesRes, mapRes] = await Promise.allSettled([
@@ -608,7 +868,10 @@ async function loadEntity(rawId) {
       : fetchDepictedWhereWithSpaceFallback(shortId),
   ]);
 
-  renderImages(imagesRes.status === 'fulfilled' ? imagesRes.value : []);
+  renderImages(
+    imagesRes.status === 'fulfilled' ? imagesRes.value : [],
+    getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES)
+  );
 
   let childItems = [];
   let conceptDetailLevel = 'feature';
@@ -637,43 +900,41 @@ async function loadEntity(rawId) {
     }
   }
 
-  renderMap(selfItem, childItems, isSpatial, conceptDetailLevel);
+  const mapPosition = getPanePositionForContent(currentPaneLayout, PANE_CONTENT_TYPES.MAP);
+  const mapPaneEls = mapPosition ? getPaneElements(mapPosition) : null;
+  renderMap(
+    selfItem,
+    childItems,
+    isSpatial,
+    conceptDetailLevel,
+    mapPaneEls ? mapPaneEls.slot : null,
+    mapPaneEls ? mapPaneEls.label : null
+  );
 }
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
-window.addEventListener('hashchange', () => {
-  const hash = location.hash.slice(1);
-  const [encodedId, queryStr] = hash.split('?');
-  const decoded = decodeURIComponent(encodedId);
-  
-  // Parse and apply grid ratios if present
-  if (queryStr) {
-    const params = new URLSearchParams(queryStr);
-    const col = parseFloat(params.get('col-split'));
-    const row = parseFloat(params.get('row-split'));
-    if (!isNaN(col) && col > 0 && col < 1) currentColSplit = col;
-    if (!isNaN(row) && row > 0 && row < 1) currentRowSplit = row;
-    applyGridRatios();
-  }
-  
-  if (decoded) loadEntity(decoded);
-});
+function handleRouteChange() {
+  const hashState = parseHashState();
+  currentPaneLayoutOverride = hashState.layoutOverride;
+
+  applyRatiosFromHashState(hashState);
+  applyGridRatios();
+
+  const targetId = hashState.id || DEFAULT_ID;
+  loadEntity(targetId);
+}
+
+window.addEventListener('hashchange', handleRouteChange);
 
 document.addEventListener('DOMContentLoaded', () => {
-  // Parse and apply grid ratios from URL
-  parseGridRatios();
+  const initialHashState = parseHashState();
+  currentPaneLayoutOverride = initialHashState.layoutOverride;
+  applyRatiosFromHashState(initialHashState);
   applyGridRatios();
   initDividerDrag();
 
-  // Initialize Leaflet (DOM is ready here)
-  leafletMap = L.map('map', { zoomControl: true });
-  L.tileLayer('http://palp.art/xyz-tiles/{z}/{x}/{y}.png', {
-    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-    maxZoom: 19,
-  }).addTo(leafletMap);
-  layerGroup = L.layerGroup().addTo(leafletMap);
-  leafletMap.setView([40.7506, 14.4890], 15);
+  applyPaneLayout(currentPaneLayoutOverride || DEFAULT_PANE_LAYOUT);
 
   // Header controls
   const input = document.getElementById('id-input');
@@ -713,13 +974,5 @@ document.addEventListener('DOMContentLoaded', () => {
   // Warm the type-ahead cache in the background.
   ensureTypeaheadLoaded().catch(() => {});
 
-  // Load initial entity from hash or default
-  const hash = location.hash.slice(1);
-  if (hash) {
-    const [encodedId, queryStr] = hash.split('?');
-    const initial = decodeURIComponent(encodedId);
-    loadEntity(initial || DEFAULT_ID);
-  } else {
-    loadEntity(DEFAULT_ID);
-  }
+  handleRouteChange();
 });
