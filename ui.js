@@ -293,6 +293,12 @@ function resolveSearchInputToId(rawInput) {
   return mapped || input;
 }
 
+function isTypeaheadSelectionEvent(evt) {
+  return typeof InputEvent !== 'undefined'
+    && evt instanceof InputEvent
+    && evt.inputType === 'insertReplacementText';
+}
+
 // ── Panel divider: persist col/row split ratios in URL ────────────────────────
 
 const MIN_PANE_RATIO = 0.2;  // 20% minimum for any column/row
@@ -685,8 +691,13 @@ document.addEventListener('DOMContentLoaded', () => {
       .catch(() => {});
   });
 
-  input.addEventListener('input', () => {
+  input.addEventListener('input', evt => {
     updateTypeahead();
+
+    // Selecting a datalist option emits replacement text input.
+    if (isTypeaheadSelectionEvent(evt)) {
+      navigate(resolveSearchInputToId(input.value || DEFAULT_ID));
+    }
   });
 
   goBtn.addEventListener('click', () => {
