@@ -104,6 +104,74 @@ function parseGeoJson(gjStr) {
   }
 }
 
+// ── Panel divider: persist col/row split ratios in URL ────────────────────────
+
+const MIN_PANE_RATIO = 0.2;  // 20% minimum for any column/row
+const MAX_PANE_RATIO = 0.8;  // 80% maximum
+
+let currentColSplit = 0.5;  // left column width ratio
+let currentRowSplit = 0.5;  // top row height ratio
+
+function parseGridRatios() {
+  const params = new URLSearchParams(location.hash.split('?')[1] || '');
+  const col = parseFloat(params.get('col-split'));
+  const row = parseFloat(params.get('row-split'));
+  if (!isNaN(col) && col > 0 && col < 1) currentColSplit = col;
+  if (!isNaN(row) && row > 0 && row < 1) currentRowSplit = row;
+}
+
+function applyGridRatios() {
+  const grid = document.getElementById('grid');
+  const divider = document.getElementById('grid-divider');
+  grid.style.gridTemplateColumns = `${currentColSplit}fr ${1 - currentColSplit}fr`;
+  grid.style.gridTemplateRows = `${currentRowSplit}fr ${1 - currentRowSplit}fr`;
+  divider.style.left = `${currentColSplit * 100}%`;
+  divider.style.top = `${currentRowSplit * 100}%`;
+}
+
+function updateUrlWithRatios() {
+  const hash = location.hash.split('?')[0].slice(1);
+  const params = new URLSearchParams();
+  params.set('col-split', currentColSplit.toFixed(3));
+  params.set('row-split', currentRowSplit.toFixed(3));
+  const newHash = `#${hash}?${params.toString()}`;
+  window.history.replaceState(null, '', newHash);
+}
+
+function initDividerDrag() {
+  const divider = document.getElementById('grid-divider');
+  const grid = document.getElementById('grid');
+
+  let isDragging = false;
+
+  divider.addEventListener('mousedown', e => {
+    isDragging = true;
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!isDragging) return;
+    const rect = grid.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    // Enforce min/max constraints
+    const newColSplit = Math.max(MIN_PANE_RATIO, Math.min(MAX_PANE_RATIO, x / rect.width));
+    const newRowSplit = Math.max(MIN_PANE_RATIO, Math.min(MAX_PANE_RATIO, y / rect.height));
+
+    currentColSplit = newColSplit;
+    currentRowSplit = newRowSplit;
+    applyGridRatios();
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (isDragging) {
+      isDragging = false;
+      updateUrlWithRatios();
+    }
+  });
+}
+
 // ── Leaflet map (initialized in DOMContentLoaded) ─────────────────────────────
 
 let leafletMap  = null;
@@ -272,7 +340,11 @@ function renderMap(selfItem, childItems, isSpatial) {
 // ── Navigation ────────────────────────────────────────────────────────────────
 
 function navigate(id) {
-  location.hash = encodeURIComponent(normalizeId(id));
+  const normalId = normalizeId(id);
+  const params = new URLSearchParams();
+  params.set('col-split', currentColSplit.toFixed(3));
+  params.set('row-split', currentRowSplit.toFixed(3));
+  location.hash = `${encodeURIComponent(normalId)}?${params.toString()}`;
 }
 
 async function loadEntity(rawId) {
@@ -336,11 +408,29 @@ async function loadEntity(rawId) {
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 window.addEventListener('hashchange', () => {
-  const decoded = decodeURIComponent(location.hash.slice(1));
+  const hash = location.hash.slice(1);
+  const [encodedId, queryStr] = hash.split('?');
+  const decoded = decodeURIComponent(encodedId);
+  
+  // Parse and apply grid ratios if present
+  if (queryStr) {
+    const params = new URLSearchParams(queryStr);
+    const col = parseFloat(params.get('col-split'));
+    const row = parseFloat(params.get('row-split'));
+    if (!isNaN(col) && col > 0 && col < 1) currentColSplit = col;
+    if (!isNaN(row) && row > 0 && row < 1) currentRowSplit = row;
+    applyGridRatios();
+  }
+  
   if (decoded) loadEntity(decoded);
 });
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Parse and apply grid ratios from URL
+  parseGridRatios();
+  applyGridRatios();
+  initDividerDrag();
+
   // Initialize Leaflet (DOM is ready here)
   leafletMap = L.map('map', { zoomControl: true });
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -360,6 +450,12 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // Load initial entity from hash or default
-  const initial = decodeURIComponent(location.hash.slice(1));
-  loadEntity(initial || DEFAULT_ID);
+  const hash = location.hash.slice(1);
+  if (hash) {
+    const [encodedId, queryStr] = hash.split('?');
+    const initial = decodeURIComponent(encodedId);
+    loadEntity(initial || DEFAULT_ID);
+  } else {
+    loadEntity(DEFAULT_ID);
+  }
 });

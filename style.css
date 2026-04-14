@@ -101,6 +101,39 @@ body {
   background: #ccc;
   padding: 3px;
   min-height: 0;
+  position: relative;
+}
+
+#grid-divider {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 20px;
+  height: 20px;
+  background: #fff;
+  border: 2px solid #999;
+  border-radius: 50%;
+  z-index: 100;
+  cursor: move;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s, border-color 0.1s;
+  pointer-events: auto;
+}
+
+#grid-divider::after {
+  content: '';
+  width: 6px;
+  height: 6px;
+  background: #999;
+  border-radius: 50%;
+}
+
+#grid-divider:hover {
+  background: #f0f0f0;
+  border-color: #555;
 }
 
 /* ── Panels ─────────────────────────────────────────────────── */
