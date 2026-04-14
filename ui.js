@@ -303,14 +303,18 @@ function addGeoJsonLayer(item, styleOpts, clickable) {
   return layer;
 }
 
-function renderMap(selfItem, childItems, isSpatial) {
+function renderMap(selfItem, childItems, isSpatial, conceptDetailLevel = 'feature') {
   layerGroup.clearLayers();
 
   const bounds = [];
 
-  const selfStyle     = { color: '#555',    weight: 2,   fillOpacity: 0.04, fillColor: '#888'    };
-  const spatialStyle  = { color: '#5b7fa6', weight: 1.5, fillOpacity: 0.22, fillColor: '#5b7fa6' };
-  const depictedStyle = { color: '#a67c5b', weight: 1.5, fillOpacity: 0.22, fillColor: '#a67c5b' };
+  const selfStyle = { color: '#777', weight: 1.5, fillOpacity: 0.02, fillColor: '#777' };
+  const mainLayerStyle = {
+    color: '#d60000',
+    weight: 3,
+    fillColor: '#ff1f1f',
+    fillOpacity: 0.16,
+  };
 
   if (selfItem) {
     const layer = addGeoJsonLayer(selfItem, selfStyle, false);
@@ -320,8 +324,7 @@ function renderMap(selfItem, childItems, isSpatial) {
   }
 
   for (const item of (childItems || [])) {
-    const style = isSpatial ? spatialStyle : depictedStyle;
-    const layer = addGeoJsonLayer(item, style, true);
+    const layer = addGeoJsonLayer(item, mainLayerStyle, true);
     if (layer) {
       try { const b = layer.getBounds(); if (b.isValid()) bounds.push(b); } catch (_) {}
     }
@@ -334,7 +337,37 @@ function renderMap(selfItem, childItems, isSpatial) {
   }
 
   document.getElementById('map-label').textContent =
-    isSpatial ? 'Map — spatial context' : 'Map — depicted in';
+    isSpatial
+      ? 'Map — spatial context'
+      : conceptDetailLevel === 'space'
+        ? 'Map — depicted in (space)'
+        : 'Map — depicted in (feature fallback)';
+}
+
+async function fetchDepictedWhereByDetail(shortId, detailLevel) {
+  try {
+    const r = await fetch(
+      `${API_BASE}/depicted-where/${encodeURIComponent(shortId)}?level_of_detail=${encodeURIComponent(detailLevel)}`
+    );
+    if (!r.ok) return null;
+    const payload = await r.json();
+    return Array.isArray(payload) ? payload : [];
+  } catch (_) {
+    return null;
+  }
+}
+
+async function fetchDepictedWhereWithSpaceFallback(shortId) {
+  const spaceItems = await fetchDepictedWhereByDetail(shortId, 'space');
+  if (Array.isArray(spaceItems) && spaceItems.length > 0) {
+    return { detailLevel: 'space', items: spaceItems };
+  }
+
+  const featureItems = await fetchDepictedWhereByDetail(shortId, 'feature');
+  return {
+    detailLevel: 'feature',
+    items: Array.isArray(featureItems) ? featureItems : [],
+  };
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -371,20 +404,27 @@ async function loadEntity(rawId) {
   const selfGjStr = (triples['urn:p-lod:id:geojson'] || [])[0] || null;
 
   // Step 2: parallel fetches — images + map children
-  const mapEndpoint = isSpatial
-    ? `${API_BASE}/spatial-children/${encodeURIComponent(shortId)}`
-    : `${API_BASE}/depicted-where/${encodeURIComponent(shortId)}`;
-
   const [imagesRes, mapRes] = await Promise.allSettled([
     fetch(`${API_BASE}/images/${encodeURIComponent(shortId)}`)
       .then(r => r.ok ? r.json() : []).catch(() => []),
-    fetch(mapEndpoint)
-      .then(r => r.ok ? r.json() : []).catch(() => []),
+    isSpatial
+      ? fetch(`${API_BASE}/spatial-children/${encodeURIComponent(shortId)}`)
+          .then(r => r.ok ? r.json() : []).catch(() => [])
+      : fetchDepictedWhereWithSpaceFallback(shortId),
   ]);
 
   renderImages(imagesRes.status === 'fulfilled' ? imagesRes.value : []);
 
-  const childItems = mapRes.status === 'fulfilled' ? (mapRes.value || []) : [];
+  let childItems = [];
+  let conceptDetailLevel = 'feature';
+  if (mapRes.status === 'fulfilled') {
+    if (isSpatial) {
+      childItems = mapRes.value || [];
+    } else {
+      childItems = (mapRes.value && mapRes.value.items) || [];
+      conceptDetailLevel = (mapRes.value && mapRes.value.detailLevel) || 'feature';
+    }
+  }
 
   // Build the self-boundary item for spatial entities
   let selfItem = null;
@@ -402,7 +442,7 @@ async function loadEntity(rawId) {
     }
   }
 
-  renderMap(selfItem, childItems, isSpatial);
+  renderMap(selfItem, childItems, isSpatial, conceptDetailLevel);
 }
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
@@ -433,7 +473,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Initialize Leaflet (DOM is ready here)
   leafletMap = L.map('map', { zoomControl: true });
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  L.tileLayer('http://palp.art/xyz-tiles/{z}/{x}/{y}.png', {
     attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     maxZoom: 19,
   }).addTo(leafletMap);
