@@ -3,16 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PALP Browser</title>
+  <title>PALP Browser (Testing)</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" >
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
   <header id="header">
-    <span id="app-title">PALP Browser</span>
+    <span id="app-title">PALP Browser (Testing)</span>
     <div id="search-bar">
-      <input type="text" id="id-input" placeholder="pompeii, athena, r4, …" autocomplete="off" spellcheck="false">
+      <input type="text" id="id-input" list="id-suggestions" placeholder="pompeii, athena, r4, …" autocomplete="off" spellcheck="false">
+      <datalist id="id-suggestions"></datalist>
       <button type="submit" id="go-btn">Go</button>
     </div>
     <span id="current-id"></span>

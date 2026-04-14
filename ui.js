@@ -43,6 +43,19 @@ const SKIP_PREDICATES = new Set([
   'urn:p-lod:id:best-image',
 ]);
 
+const TYPEAHEAD_SOURCE_TYPES = ['concept', 'region', 'insula', 'property'];
+const TYPEAHEAD_SHOW_ID_TYPES = new Set(['region', 'insula', 'property']);
+const TYPEAHEAD_MAX_SUGGESTIONS = 16;
+const TYPEAHEAD_DEBOUNCE_MS = 120;
+const TYPEAHEAD_CACHE_MS = 5 * 60 * 1000;
+
+const typeaheadState = {
+  suggestions: [],
+  resolveMap: new Map(),
+  loadedAt: 0,
+  loadingPromise: null,
+};
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 function normalizeId(raw) {
@@ -102,6 +115,182 @@ function parseGeoJson(gjStr) {
   } catch (_) {
     return null;
   }
+}
+
+function debounce(fn, waitMs) {
+  let timeoutId = null;
+  return (...args) => {
+    if (timeoutId) clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => fn(...args), waitMs);
+  };
+}
+
+function normalizeTypeaheadRecord(item, sourceType) {
+  if (!item || !item.urn) return null;
+
+  const shortId = extractShortId(item.urn).trim();
+  if (!shortId) return null;
+
+  let itemType = sourceType;
+  if (item.type && String(item.type).startsWith('urn:p-lod:id:')) {
+    itemType = extractShortId(item.type);
+  }
+
+  const label = (typeof item.label === 'string' && item.label.trim())
+    ? item.label.trim()
+    : null;
+
+  return { shortId, label, type: itemType };
+}
+
+function addTypeaheadSuggestion(target, seenValues, value, shortId, type) {
+  const cleanValue = String(value || '').trim();
+  if (!cleanValue) return;
+
+  const dedupeKey = cleanValue.toLowerCase();
+  if (seenValues.has(dedupeKey)) return;
+
+  seenValues.add(dedupeKey);
+  target.push({ value: cleanValue, shortId, type });
+}
+
+async function fetchInstancesOfType(sourceType) {
+  try {
+    const r = await fetch(`${API_BASE}/instances-of/${encodeURIComponent(sourceType)}`);
+    if (!r.ok) return [];
+    const payload = await r.json();
+    return Array.isArray(payload) ? payload : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function rebuildTypeaheadIndex(instanceListsByType) {
+  const byShortId = new Map();
+
+  for (const { sourceType, items } of instanceListsByType) {
+    for (const item of (items || [])) {
+      const normalized = normalizeTypeaheadRecord(item, sourceType);
+      if (!normalized) continue;
+
+      const existing = byShortId.get(normalized.shortId);
+      if (!existing) {
+        byShortId.set(normalized.shortId, normalized);
+        continue;
+      }
+
+      // Prefer whichever record provides a label if duplicates appear.
+      if (!existing.label && normalized.label) {
+        existing.label = normalized.label;
+        existing.type = normalized.type;
+      }
+    }
+  }
+
+  const ordered = Array.from(byShortId.values()).sort((a, b) => a.shortId.localeCompare(b.shortId));
+  const resolveMap = new Map();
+  const suggestions = [];
+  const seenSuggestionValues = new Set();
+
+  for (const rec of ordered) {
+    const shortLower = rec.shortId.toLowerCase();
+    resolveMap.set(shortLower, rec.shortId);
+    resolveMap.set(`urn:p-lod:id:${rec.shortId}`.toLowerCase(), rec.shortId);
+
+    if (rec.label) {
+      const labelLower = rec.label.toLowerCase();
+      if (!resolveMap.has(labelLower)) {
+        resolveMap.set(labelLower, rec.shortId);
+      }
+      addTypeaheadSuggestion(suggestions, seenSuggestionValues, rec.label, rec.shortId, rec.type);
+    }
+
+    const shouldShowShortId = !rec.label || TYPEAHEAD_SHOW_ID_TYPES.has(rec.type);
+    if (shouldShowShortId) {
+      addTypeaheadSuggestion(suggestions, seenSuggestionValues, rec.shortId, rec.shortId, rec.type);
+    }
+  }
+
+  typeaheadState.suggestions = suggestions;
+  typeaheadState.resolveMap = resolveMap;
+  typeaheadState.loadedAt = Date.now();
+}
+
+function isTypeaheadCacheFresh() {
+  return !!typeaheadState.loadedAt && (Date.now() - typeaheadState.loadedAt) < TYPEAHEAD_CACHE_MS;
+}
+
+async function ensureTypeaheadLoaded(forceRefresh = false) {
+  if (!forceRefresh && isTypeaheadCacheFresh()) return;
+
+  if (typeaheadState.loadingPromise) {
+    await typeaheadState.loadingPromise;
+    return;
+  }
+
+  typeaheadState.loadingPromise = (async () => {
+    const results = await Promise.all(
+      TYPEAHEAD_SOURCE_TYPES.map(async sourceType => ({
+        sourceType,
+        items: await fetchInstancesOfType(sourceType),
+      }))
+    );
+    rebuildTypeaheadIndex(results);
+  })();
+
+  try {
+    await typeaheadState.loadingPromise;
+  } finally {
+    typeaheadState.loadingPromise = null;
+  }
+}
+
+function rankTypeaheadSuggestion(entry, queryLower) {
+  const valueLower = entry.value.toLowerCase();
+  const shortLower = entry.shortId.toLowerCase();
+
+  if (valueLower === queryLower || shortLower === queryLower) return 0;
+  if (valueLower.startsWith(queryLower)) return 1;
+  if (shortLower.startsWith(queryLower)) return 2;
+  if (valueLower.includes(queryLower)) return 3;
+  if (shortLower.includes(queryLower)) return 4;
+  return 99;
+}
+
+function getTypeaheadSuggestions(query) {
+  const queryLower = String(query || '').trim().toLowerCase();
+  if (!queryLower) return [];
+
+  const matches = [];
+  for (const entry of typeaheadState.suggestions) {
+    const score = rankTypeaheadSuggestion(entry, queryLower);
+    if (score < 99) {
+      matches.push({ entry, score });
+    }
+  }
+
+  matches.sort((a, b) => {
+    if (a.score !== b.score) return a.score - b.score;
+    return a.entry.value.localeCompare(b.entry.value);
+  });
+
+  return matches.slice(0, TYPEAHEAD_MAX_SUGGESTIONS).map(m => m.entry);
+}
+
+function renderTypeaheadSuggestions(rawQuery, datalistEl) {
+  if (!datalistEl) return;
+  const suggestions = getTypeaheadSuggestions(rawQuery);
+  datalistEl.innerHTML = suggestions
+    .map(s => `<option value="${escAttr(s.value)}"></option>`)
+    .join('');
+}
+
+function resolveSearchInputToId(rawInput) {
+  const input = String(rawInput || '').trim();
+  if (!input) return DEFAULT_ID;
+
+  const mapped = typeaheadState.resolveMap.get(input.toLowerCase());
+  return mapped || input;
 }
 
 // ── Panel divider: persist col/row split ratios in URL ────────────────────────
@@ -482,12 +671,36 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Header controls
   const input = document.getElementById('id-input');
+  const datalist = document.getElementById('id-suggestions');
   const goBtn = document.getElementById('go-btn');
 
-  goBtn.addEventListener('click', () => navigate(input.value || DEFAULT_ID));
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') navigate(input.value || DEFAULT_ID);
+  const updateTypeahead = debounce(async () => {
+    await ensureTypeaheadLoaded();
+    renderTypeaheadSuggestions(input.value, datalist);
+  }, TYPEAHEAD_DEBOUNCE_MS);
+
+  input.addEventListener('focus', () => {
+    ensureTypeaheadLoaded()
+      .then(() => renderTypeaheadSuggestions(input.value, datalist))
+      .catch(() => {});
   });
+
+  input.addEventListener('input', () => {
+    updateTypeahead();
+  });
+
+  goBtn.addEventListener('click', () => {
+    navigate(resolveSearchInputToId(input.value || DEFAULT_ID));
+  });
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      navigate(resolveSearchInputToId(input.value || DEFAULT_ID));
+    }
+  });
+
+  // Warm the type-ahead cache in the background.
+  ensureTypeaheadLoaded().catch(() => {});
 
   // Load initial entity from hash or default
   const hash = location.hash.slice(1);
