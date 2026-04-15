@@ -5,12 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Redirecting...</title>
     <script>
-        const path = window.replace.pathname;
-        const match = path.match(/^\/browse\/(.+)$/);
-        if (match) {
-            const id = match[1];
-            window.location.replace(`browse/#${id}`);
-        }
+        (function () {
+            const path = window.location.pathname;
+            const match = path.match(/^(.*\/browse)\/([^/]+)\/?$/);
+            if (match) {
+                const base = match[1];
+                const id = decodeURIComponent(match[2]);
+                const target = `${base}/#${id}${window.location.search}`;
+                window.location.replace(target);
+            }
+        })();
     </script>
 </head>
 <body>
