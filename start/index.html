@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pompeii Artistic Landscape Project</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+
+  <header id="header">
+    <span id="app-title">Pompeii Artistic Landscape Project</span>
+    <div id="search-bar">
+      <input type="text" id="id-input" list="id-suggestions" placeholder="pompeii, athena, r4, …" autocomplete="off" spellcheck="false">
+      <datalist id="id-suggestions"></datalist>
+      <button type="submit" id="go-btn">Go</button>
+    </div>
+    <span id="current-id"></span>
+  </header>
+
+  <main>
+    <section class="intro">
+      <p>The Pompeii Artistic Landscape Project (PALP) is an online resource that supports site-wide discovery, mapping, analysis, and sharing of information about Pompeian artworks in their architectural and urban contexts. The goal of PALP is to dramatically increase the number of researchers and members of the public who can access, analyze, interpret, and share the artworks of the most richly documented urban environment of the Roman world: Pompeii.</p>
+    </section>
+  </main>
+
+  <footer>
+    <p>PALP is hosted at the University of Massachusetts-Amherst and funded by the Getty Foundation. The site is very much in development and will change regularly. View &#8216;pompeii&#8217; on <a href="https://p-lod.org">P-LOD</a>.</p>
+  </footer>
+
+  <style>
+    main {
+      flex: 1;
+    }
+    footer {
+      flex-shrink: 0;
+      padding: 0.5rem 1rem;
+      font-size: 0.75rem;
+      color: #555;
+      border-top: 1px solid #ccc;
+      background: #e8e4df;
+    }
+    footer p { margin: 0; }
+    footer a { color: #5b7fa6; }
+  </style>
+
+  <script>
+    (function () {
+      'use strict';
+
+      const API_BASE = 'https://api.p-lod.org';
+      const SOURCE_TYPES = ['concept', 'region', 'insula', 'property'];
+      const MAX_SUGGESTIONS = 16;
+      const DEBOUNCE_MS = 120;
+      const SHOW_ID_TYPES = new Set(['region', 'insula', 'property']);
+
+      let suggestions = [];
+      let resolveMap = new Map();
+      let loadingPromise = null;
+
+      function extractShortId(urn) {
+        return String(urn).replace(/^urn:p-lod:id:/, '');
+      }
+
+      async function fetchAll() {
+        if (loadingPromise) return loadingPromise;
+        loadingPromise = Promise.all(
+          SOURCE_TYPES.map(t =>
+            fetch(`${API_BASE}/instances-of/${encodeURIComponent(t)}`)
+              .then(r => r.ok ? r.json() : [])
+              .catch(() => [])
+              .then(items => ({ type: t, items }))
+          )
+        ).then(results => {
+          const byId = new Map();
+          for (const { type, items } of results) {
+            for (const item of (items || [])) {
+              if (!item || !item.urn) continue;
+              const shortId = extractShortId(item.urn).trim();
+              if (!shortId) continue;
+              const label = (typeof item.label === 'string' && item.label.trim()) ? item.label.trim() : null;
+              let itemType = type;
+              if (item.type && String(item.type).startsWith('urn:p-lod:id:')) {
+                itemType = extractShortId(item.type);
+              }
+              const existing = byId.get(shortId);
+              if (!existing) {
+                byId.set(shortId, { shortId, label, type: itemType });
+              } else if (!existing.label && label) {
+                existing.label = label;
+                existing.type = itemType;
+              }
+            }
+          }
+
+          const newSuggestions = [];
+          const newResolveMap = new Map();
+          const seen = new Set();
+
+          for (const rec of Array.from(byId.values()).sort((a, b) => a.shortId.localeCompare(b.shortId))) {
+            newResolveMap.set(rec.shortId.toLowerCase(), rec.shortId);
+            newResolveMap.set(`urn:p-lod:id:${rec.shortId}`.toLowerCase(), rec.shortId);
+
+            if (rec.label) {
+              const ll = rec.label.toLowerCase();
+              if (!newResolveMap.has(ll)) newResolveMap.set(ll, rec.shortId);
+              if (!seen.has(rec.label.toLowerCase())) {
+                seen.add(rec.label.toLowerCase());
+                newSuggestions.push({ value: rec.label, shortId: rec.shortId, type: rec.type });
+              }
+            }
+
+            const showId = !rec.label || SHOW_ID_TYPES.has(rec.type);
+            if (showId && !seen.has(rec.shortId.toLowerCase())) {
+              seen.add(rec.shortId.toLowerCase());
+              newSuggestions.push({ value: rec.shortId, shortId: rec.shortId, type: rec.type });
+            }
+          }
+
+          suggestions = newSuggestions;
+          resolveMap = newResolveMap;
+        });
+        return loadingPromise;
+      }
+
+      function rank(entry, queryLow) {
+        const v = entry.value.toLowerCase();
+        const s = entry.shortId.toLowerCase();
+        if (v === queryLow || s === queryLow) return 0;
+        if (v.startsWith(queryLow)) return 1;
+        if (s.startsWith(queryLow)) return 2;
+        if (v.includes(queryLow)) return 3;
+        if (s.includes(queryLow)) return 4;
+        return 99;
+      }
+
+      function populateDatalist(query) {
+        const datalist = document.getElementById('id-suggestions');
+        if (!datalist) return;
+        const q = String(query || '').trim().toLowerCase();
+        const matches = q
+          ? suggestions
+              .map(e => ({ e, sc: rank(e, q) }))
+              .filter(x => x.sc < 99)
+              .sort((a, b) => a.sc !== b.sc ? a.sc - b.sc : a.e.value.localeCompare(b.e.value))
+              .slice(0, MAX_SUGGESTIONS)
+              .map(x => x.e)
+          : suggestions.slice(0, MAX_SUGGESTIONS);
+        datalist.innerHTML = matches
+          .map(s => `<option value="${s.value.replace(/"/g, '&quot;')}"></option>`)
+          .join('');
+      }
+
+      function navigateToBrowse(rawInput) {
+        const input = String(rawInput || '').trim();
+        if (!input) {
+          window.location.href = '../browse/#pompeii';
+          return;
+        }
+        const resolved = resolveMap.get(input.toLowerCase()) || input;
+        window.location.href = `../browse/#${encodeURIComponent(resolved)}`;
+      }
+
+      function debounce(fn, ms) {
+        let t = null;
+        return (...args) => { if (t) clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+      }
+
+      document.addEventListener('DOMContentLoaded', () => {
+        const input = document.getElementById('id-input');
+        const goBtn = document.getElementById('go-btn');
+
+        const updateTypeahead = debounce(() => {
+          fetchAll().then(() => populateDatalist(input.value)).catch(() => {});
+        }, DEBOUNCE_MS);
+
+        input.addEventListener('focus', () => {
+          fetchAll().then(() => populateDatalist(input.value)).catch(() => {});
+        });
+
+        input.addEventListener('input', () => updateTypeahead());
+
+        input.addEventListener('keydown', e => {
+          if (e.key === 'Enter') navigateToBrowse(input.value);
+        });
+
+        goBtn.addEventListener('click', () => navigateToBrowse(input.value));
+      });
+    })();
+  </script>
+
+</body>
+</html>
