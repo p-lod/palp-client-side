@@ -2,6 +2,11 @@
   box-sizing: border-box;
 }
 
+:root {
+  --map-highlight-border: #ff9900;
+  --map-highlight-fill: #ffcc00;
+}
+
 html, body {
   margin: 0;
   padding: 0;
@@ -270,6 +275,11 @@ body {
 
 .image-grid a {
   display: block;
+  border-radius: 3px;
+  border: 3px solid transparent;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+  transform-origin: center;
+  will-change: transform;
 }
 
 .image-grid img {
@@ -278,17 +288,46 @@ body {
   object-fit: cover;
   border-radius: 3px;
   display: block;
-  transition: opacity 0.15s;
+  transition: opacity 0.12s ease;
 }
 
-.image-grid img:hover {
+.image-grid a:hover img,
+.image-grid a:focus-visible img,
+.image-grid a.is-highlighted img {
   opacity: 0.8;
+}
+
+.image-grid a:hover,
+.image-grid a:focus-visible,
+.image-grid a.is-highlighted,
+.image-urn-fallback.is-highlighted {
+  border-color: var(--map-highlight-border);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--map-highlight-fill) 70%, white 30%),
+    0 4px 12px color-mix(in srgb, var(--map-highlight-border) 28%, transparent 72%);
+}
+
+.image-grid a.is-highlighted,
+.image-urn-fallback.is-highlighted {
+  animation: image-highlight-pop 220ms cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+.image-grid a.is-highlighted {
+  transform: scale(1.045);
+}
+
+.image-urn-fallback.is-highlighted {
+  transform: scale(1.045);
+}
+
+.image-grid a:focus-visible {
+  outline: none;
 }
 
 .image-urn-fallback {
   aspect-ratio: 1 / 1;
   background: #f4f2ee;
-  border: 1px solid #e0ddd8;
+  border: 2px solid #e0ddd8;
   border-radius: 3px;
   display: flex;
   align-items: center;
@@ -298,6 +337,9 @@ body {
   word-break: break-all;
   padding: 0.2rem;
   text-align: center;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+  transform-origin: center;
+  will-change: transform;
 }
 
 /* ── States ─────────────────────────────────────────────────── */
@@ -319,6 +361,31 @@ body {
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.4; }
+}
+
+@keyframes image-highlight-pop {
+  0% {
+    transform: scale(1);
+  }
+  55% {
+    transform: scale(1.065);
+  }
+  100% {
+    transform: scale(1.045);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .image-grid a,
+  .image-urn-fallback {
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  }
+
+  .image-grid a.is-highlighted,
+  .image-urn-fallback.is-highlighted {
+    animation: none;
+    transform: none;
+  }
 }
 
 /* ── Responsive ─────────────────────────────────────────────── */

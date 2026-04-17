@@ -45,7 +45,7 @@ const SKIP_PREDICATES = new Set([
 
 const TYPEAHEAD_SOURCE_TYPES = ['concept', 'region', 'insula', 'property'];
 const TYPEAHEAD_SHOW_ID_TYPES = new Set(['region', 'insula', 'property']);
-const TYPEAHEAD_MAX_SUGGESTIONS = 16;
+const TYPEAHEAD_MAX_SUGGESTIONS = 64;
 const TYPEAHEAD_DEBOUNCE_MS = 120;
 const TYPEAHEAD_CACHE_MS = 5 * 60 * 1000;
 
@@ -100,8 +100,8 @@ let currentResourceProfile = 'default';
 
 // ── Inter-pane event bus ──────────────────────────────────────────────────────
 
-const PANE_EVENT_SPACE_HOVER   = 'space:hover';
-const PANE_EVENT_SPACE_UNHOVER = 'space:unhover';
+const PANE_EVENT_ENTITY_HIGHLIGHT = 'entity:highlight';
+const PANE_EVENT_ENTITY_CLEAR     = 'entity:clear';
 
 const paneEvents = (() => {
   const handlers = new Map();
@@ -526,10 +526,13 @@ function applyGridRatios() {
 function buildHash(id, layoutOverride = currentPaneLayoutOverride) {
   const shortId = extractShortId(normalizeId(id || DEFAULT_ID));
   const params = new URLSearchParams();
-  params.set('col-split', currentColSplit.toFixed(3));
-  params.set('row-split', currentRowSplit.toFixed(3));
+  const colSplitFixed = currentColSplit.toFixed(3);
+  const rowSplitFixed = currentRowSplit.toFixed(3);
+  if (colSplitFixed !== '0.500') params.set('col-split', colSplitFixed);
+  if (rowSplitFixed !== '0.500') params.set('row-split', rowSplitFixed);
   if (layoutOverride) params.set('layout', encodePaneLayout(layoutOverride));
-  return `#${encodeURIComponent(shortId)}?${params.toString()}`;
+  const query = params.toString();
+  return query ? `#${encodeURIComponent(shortId)}?${query}` : `#${encodeURIComponent(shortId)}`;
 }
 
 function updateUrlWithRatios() {
@@ -578,8 +581,19 @@ function initDividerDrag() {
 let leafletMap  = null;
 let layerGroup  = null;
 let mapContainerEl = null;
-let layersBySpaceUrn = new Map();   // URN → { layer, defaultStyle } for hover linkage
+let layersByEntityUrn = new Map();   // URN → { layer, defaultStyle } for hover linkage
 let spatialHoverCache = new Map();  // featureUrn → resolved layerUrn|null, cleared on navigation
+let ancestorByEntityUrnCache = new Map();  // entityUrn → ancestorUrn|null
+let ancestorOutlineLayerCache = new Map(); // ancestorUrn → Leaflet layer
+let pendingAncestorByEntityUrn = new Map(); // entityUrn → Promise<ancestorUrn|null>
+let pendingAncestorOutlineLayerByUrn = new Map(); // ancestorUrn → Promise<LeafletLayer|null>
+let activeAncestorOutlineUrn = null;
+let currentHoveredEntityUrn = null;
+let isOptionKeyDown = false;
+let isCtrlKeyDown = false;
+let firstImageElByEntityUrn = new Map(); // spatial/entity URN -> first image tile element
+let activeMapHoverImageEl = null;
+let imageAssociationBuildToken = 0;
 
 const HIGHLIGHT_STYLE = Object.freeze({
   color: '#ff9900',
@@ -587,6 +601,90 @@ const HIGHLIGHT_STYLE = Object.freeze({
   fillColor: '#ffcc00',
   fillOpacity: 0.5,
 });
+
+const ANCESTOR_OUTLINE_STYLE = Object.freeze({
+  color: '#005a9c',
+  weight: 3,
+  opacity: 1,
+  fillOpacity: 0,
+  dashArray: '',
+});
+
+const IMAGE_HOVER_CLASS = 'is-highlighted';
+
+function syncHighlightCssVars() {
+  document.documentElement.style.setProperty('--map-highlight-border', HIGHLIGHT_STYLE.color);
+  document.documentElement.style.setProperty('--map-highlight-fill', HIGHLIGHT_STYLE.fillColor);
+}
+
+function setImageHoverState(el, isActive) {
+  if (!el) return;
+  el.classList.toggle(IMAGE_HOVER_CLASS, isActive);
+}
+
+function clearActiveMapHoverImage() {
+  if (!activeMapHoverImageEl) return;
+  setImageHoverState(activeMapHoverImageEl, false);
+  activeMapHoverImageEl = null;
+}
+
+function clearImageAssociations() {
+  imageAssociationBuildToken += 1;
+  firstImageElByEntityUrn.clear();
+  clearActiveMapHoverImage();
+}
+
+function registerFirstImageAssociation(entityUrn, imageEl) {
+  if (!entityUrn || !imageEl) return;
+  if (!firstImageElByEntityUrn.has(entityUrn)) {
+    firstImageElByEntityUrn.set(entityUrn, imageEl);
+  }
+}
+
+function highlightAndScrollToFirstAssociatedImage(entityUrn) {
+  if (!entityUrn) return;
+
+  const imageEl = firstImageElByEntityUrn.get(entityUrn);
+  if (!imageEl) return;
+
+  if (activeMapHoverImageEl && activeMapHoverImageEl !== imageEl) {
+    setImageHoverState(activeMapHoverImageEl, false);
+  }
+
+  activeMapHoverImageEl = imageEl;
+  setImageHoverState(imageEl, true);
+  imageEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+}
+
+function initModifierKeyTracking() {
+  window.addEventListener('keydown', e => {
+    if (e.key === 'Alt') isOptionKeyDown = true;
+    if (e.key === 'Control') isCtrlKeyDown = true;
+  });
+
+  window.addEventListener('keyup', e => {
+    if (e.key === 'Alt') isOptionKeyDown = false;
+    if (e.key === 'Control') isCtrlKeyDown = false;
+  });
+
+  window.addEventListener('blur', () => {
+    isOptionKeyDown = false;
+    isCtrlKeyDown = false;
+  });
+}
+
+function isAltGraphActive(evt) {
+  return !!(evt && typeof evt.getModifierState === 'function' && evt.getModifierState('AltGraph'));
+}
+
+function shouldPanFromEvent(evt) {
+  return !!(evt && evt.altKey) && !isAltGraphActive(evt);
+}
+
+function isPanModifierDown() {
+  // AltGr is effectively Ctrl+Alt on many layouts; ignore that combination.
+  return isOptionKeyDown && !isCtrlKeyDown;
+}
 
 function ensureMapContainerInSlot(slotEl) {
   if (!slotEl) return null;
@@ -623,8 +721,121 @@ function ensureMapInitialized(slotEl) {
 
 function clearMapLayers() {
   if (layerGroup) layerGroup.clearLayers();
-  layersBySpaceUrn.clear();
+  layersByEntityUrn.clear();
   spatialHoverCache.clear();
+  ancestorByEntityUrnCache.clear();
+  ancestorOutlineLayerCache.clear();
+  pendingAncestorByEntityUrn.clear();
+  pendingAncestorOutlineLayerByUrn.clear();
+  activeAncestorOutlineUrn = null;
+  currentHoveredEntityUrn = null;
+}
+
+async function resolveAncestorForEntity(entityUrn) {
+  if (!entityUrn) return null;
+  if (ancestorByEntityUrnCache.has(entityUrn)) {
+    return ancestorByEntityUrnCache.get(entityUrn);
+  }
+  if (pendingAncestorByEntityUrn.has(entityUrn)) {
+    return pendingAncestorByEntityUrn.get(entityUrn);
+  }
+
+  const pending = (async () => {
+    try {
+      const shortId = extractShortId(entityUrn);
+      const r = await fetch(`${API_BASE}/spatial-ancestors/${encodeURIComponent(shortId)}`);
+      if (!r.ok) return null;
+
+      const ancestors = await r.json();
+      if (!Array.isArray(ancestors)) return null;
+
+      // /spatial-ancestors is child-first. Use the first true ancestor
+      // by position so behavior is generic and type-agnostic.
+      const firstTrueAncestor = ancestors.find((a, idx) => idx > 0 && a && a.urn);
+      if (firstTrueAncestor) return firstTrueAncestor.urn;
+
+      const firstWithUrn = ancestors.find(a => a && a.urn);
+      return firstWithUrn ? firstWithUrn.urn : null;
+    } catch (_) {
+      return null;
+    } finally {
+      pendingAncestorByEntityUrn.delete(entityUrn);
+    }
+  })();
+
+  pendingAncestorByEntityUrn.set(entityUrn, pending);
+  const resolved = await pending;
+  ancestorByEntityUrnCache.set(entityUrn, resolved);
+  return resolved;
+}
+
+async function ensureAncestorOutlineLayer(ancestorUrn) {
+  if (!ancestorUrn) return null;
+  if (ancestorOutlineLayerCache.has(ancestorUrn)) return ancestorOutlineLayerCache.get(ancestorUrn);
+  if (pendingAncestorOutlineLayerByUrn.has(ancestorUrn)) return pendingAncestorOutlineLayerByUrn.get(ancestorUrn);
+
+  const pending = (async () => {
+    try {
+      const shortId = extractShortId(ancestorUrn);
+      const r = await fetch(`${API_BASE}/geojson/${encodeURIComponent(shortId)}`);
+      if (!r.ok) return null;
+
+      const payload = await r.json();
+      const parsed = parseGeoJson(payload && payload.geojson ? payload.geojson : payload);
+      if (!parsed) return null;
+
+      const layer = L.geoJSON(parsed, {
+        style: { ...ANCESTOR_OUTLINE_STYLE, className: 'plod-ancestor-outline' },
+      });
+      ancestorOutlineLayerCache.set(ancestorUrn, layer);
+      return layer;
+    } catch (_) {
+      return null;
+    } finally {
+      pendingAncestorOutlineLayerByUrn.delete(ancestorUrn);
+    }
+  })();
+
+  pendingAncestorOutlineLayerByUrn.set(ancestorUrn, pending);
+  return pending;
+}
+
+function hideActiveAncestorOutline() {
+  if (!activeAncestorOutlineUrn || !layerGroup) return;
+  const layer = ancestorOutlineLayerCache.get(activeAncestorOutlineUrn);
+  if (!layer) {
+    activeAncestorOutlineUrn = null;
+    return;
+  }
+
+  if (layerGroup.hasLayer(layer)) layerGroup.removeLayer(layer);
+  activeAncestorOutlineUrn = null;
+}
+
+async function showAncestorOutlineForHoveredEntity(entityUrn) {
+  if (!entityUrn || !layerGroup) return;
+
+  const ancestorUrn = await resolveAncestorForEntity(entityUrn);
+  if (!ancestorUrn) return;
+  if (currentHoveredEntityUrn !== entityUrn) return;
+
+  const layer = await ensureAncestorOutlineLayer(ancestorUrn);
+  if (!layer) return;
+  if (currentHoveredEntityUrn !== entityUrn) return;
+
+  if (activeAncestorOutlineUrn && activeAncestorOutlineUrn !== ancestorUrn) {
+    hideActiveAncestorOutline();
+  }
+
+  if (!layerGroup.hasLayer(layer)) layer.addTo(layerGroup);
+  // Keep ancestor outline above the general map geometry...
+  layer.bringToFront();
+
+  // ...but keep the currently hovered spatial entity above that outline.
+  const entityEntry = layersByEntityUrn.get(entityUrn);
+  if (entityEntry) entityEntry.layer.bringToFront();
+
+  activeAncestorOutlineUrn = ancestorUrn;
 }
 
 function renderPlaceholderInSlot(slotEl, text = '—') {
@@ -731,11 +942,11 @@ function renderImages(images, el) {
 
   // Build feature URN lookup before resolving URLs (resolveImageUrl discards the feature field)
   const featureByUrn = new Map();
-  for (const img of images.slice(0, 100)) {
+  for (const img of images) {
     if (img && img.urn && img.feature) featureByUrn.set(img.urn, img.feature);
   }
 
-  Promise.all(images.slice(0, 100).map(resolveImageUrl)).then(results => {
+  Promise.all(images.map(resolveImageUrl)).then(results => {
     const valid = results.filter(Boolean);
     if (!valid.length) {
       el.innerHTML = '<p class="placeholder">No images available.</p>';
@@ -762,10 +973,26 @@ function renderImages(images, el) {
 }
 
 function wireImageHoverEvents(containerEl) {
-  containerEl.querySelectorAll('[data-space-urn]').forEach(el => {
-    const urn = el.dataset.spaceUrn;
-    el.addEventListener('mouseenter', () => paneEvents.emit(PANE_EVENT_SPACE_HOVER,   { urn }));
-    el.addEventListener('mouseleave', () => paneEvents.emit(PANE_EVENT_SPACE_UNHOVER, { urn }));
+  containerEl.querySelectorAll('[data-entity-urn], [data-space-urn]').forEach(el => {
+    const urn = el.dataset.entityUrn || el.dataset.spaceUrn;
+    if (urn) registerFirstImageAssociation(urn, el);
+
+    el.addEventListener('mouseenter', e => {
+      setImageHoverState(el, true);
+      paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: shouldPanFromEvent(e) });
+    });
+    el.addEventListener('mouseleave', () => {
+      setImageHoverState(el, false);
+      paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn });
+    });
+    el.addEventListener('focus', () => {
+      setImageHoverState(el, true);
+      paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: isPanModifierDown() });
+    });
+    el.addEventListener('blur', () => {
+      setImageHoverState(el, false);
+      paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn });
+    });
   });
 }
 
@@ -773,7 +1000,7 @@ async function resolveFeatureToLayer(featureUrn) {
   if (spatialHoverCache.has(featureUrn)) return spatialHoverCache.get(featureUrn);
 
   // Direct match (edge case: feature URN is itself a registered layer)
-  if (layersBySpaceUrn.has(featureUrn)) {
+  if (layersByEntityUrn.has(featureUrn)) {
     spatialHoverCache.set(featureUrn, featureUrn);
     return featureUrn;
   }
@@ -785,7 +1012,7 @@ async function resolveFeatureToLayer(featureUrn) {
     const ancestors = await r.json();
     if (Array.isArray(ancestors)) {
       for (const a of ancestors) {
-        if (a.urn && layersBySpaceUrn.has(a.urn)) {
+        if (a.urn && layersByEntityUrn.has(a.urn)) {
           spatialHoverCache.set(featureUrn, a.urn);
           return a.urn;
         }
@@ -801,14 +1028,35 @@ function wireSpatialImageHoverEvents(containerEl) {
   containerEl.querySelectorAll('[data-feature-urn]').forEach(el => {
     const featureUrn = el.dataset.featureUrn;
     let resolvedUrn = null;
-    el.addEventListener('mouseenter', async () => {
+    const buildTokenAtBind = imageAssociationBuildToken;
+
+    registerFirstImageAssociation(featureUrn, el);
+    void resolveFeatureToLayer(featureUrn).then(layerUrn => {
+      if (buildTokenAtBind !== imageAssociationBuildToken) return;
+      if (!layerUrn) return;
+      registerFirstImageAssociation(layerUrn, el);
+    });
+
+    el.addEventListener('mouseenter', async e => {
+      const shouldPan = shouldPanFromEvent(e);
+      setImageHoverState(el, true);
       resolvedUrn = await resolveFeatureToLayer(featureUrn);
       if (resolvedUrn && el.matches(':hover')) {
-        paneEvents.emit(PANE_EVENT_SPACE_HOVER, { urn: resolvedUrn });
+        paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: resolvedUrn, shouldPan });
       }
     });
     el.addEventListener('mouseleave', () => {
-      if (resolvedUrn) paneEvents.emit(PANE_EVENT_SPACE_UNHOVER, { urn: resolvedUrn });
+      setImageHoverState(el, false);
+      if (resolvedUrn) paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn: resolvedUrn });
+    });
+    el.addEventListener('focus', async () => {
+      setImageHoverState(el, true);
+      resolvedUrn = await resolveFeatureToLayer(featureUrn);
+      if (resolvedUrn) paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: resolvedUrn, shouldPan: isPanModifierDown() });
+    });
+    el.addEventListener('blur', () => {
+      setImageHoverState(el, false);
+      if (resolvedUrn) paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn: resolvedUrn });
     });
   });
 }
@@ -816,7 +1064,7 @@ function wireSpatialImageHoverEvents(containerEl) {
 function renderConceptImages(depictedItems, el) {
   if (!el) return;
 
-  const items = (depictedItems || []).slice(0, 100);
+  const items = depictedItems || [];
   if (!items.length) {
     el.innerHTML = '<p class="placeholder">No images available.</p>';
     return;
@@ -824,15 +1072,15 @@ function renderConceptImages(depictedItems, el) {
 
   let html = '<div class="image-grid">';
   for (const item of items) {
-    const spaceUrn = item.urn || '';
-    const url      = item.l_img_url || null;
-    const short    = extractShortId(spaceUrn);
+    const entityUrn = item.urn || '';
+    const url       = item.l_img_url || null;
+    const short     = extractShortId(entityUrn);
     if (url) {
-      html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer" data-space-urn="${escAttr(spaceUrn)}">` +
+      html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer" data-entity-urn="${escAttr(entityUrn)}">` +
               `<img src="${escAttr(url)}" alt="${escAttr(short)}" title="${escAttr(short)}" loading="lazy">` +
               `</a>`;
-    } else if (spaceUrn) {
-      html += `<div class="image-urn-fallback" data-space-urn="${escAttr(spaceUrn)}" title="${escAttr(spaceUrn)}">${escHtml(short)}</div>`;
+    } else if (entityUrn) {
+      html += `<div class="image-urn-fallback" data-entity-urn="${escAttr(entityUrn)}" title="${escAttr(entityUrn)}">${escHtml(short)}</div>`;
     }
   }
   html += '</div>';
@@ -851,6 +1099,14 @@ function addGeoJsonLayer(item, styleOpts, clickable) {
     onEachFeature(_feature, lyr) {
       const label = item.label || extractShortId(item.urn || '');
       lyr.bindTooltip(label, { sticky: true });
+      if (item.urn) {
+        lyr.on('mouseover', () => {
+          paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: item.urn, source: 'map' });
+        });
+        lyr.on('mouseout', () => {
+          paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn: item.urn, source: 'map' });
+        });
+      }
       if (clickable && item.urn) {
         lyr.on('click', () => navigate(item.urn));
       }
@@ -858,21 +1114,62 @@ function addGeoJsonLayer(item, styleOpts, clickable) {
   });
 
   layer.addTo(layerGroup);
-  if (item.urn) layersBySpaceUrn.set(item.urn, { layer, defaultStyle: { ...styleOpts } });
+  if (item.urn) layersByEntityUrn.set(item.urn, { layer, defaultStyle: { ...styleOpts } });
   return layer;
 }
 
+function panToLayerIfOutOfView(layer) {
+  if (!leafletMap || !layer || typeof layer.getBounds !== 'function') return;
+
+  let targetBounds = null;
+  try {
+    targetBounds = layer.getBounds();
+  } catch (_) {
+    return;
+  }
+
+  if (!targetBounds || !targetBounds.isValid()) return;
+
+  const mapBounds = leafletMap.getBounds();
+  if (mapBounds.intersects(targetBounds)) return;
+
+  leafletMap.panTo(targetBounds.getCenter(), { animate: true });
+}
+
 function initMapHoverListeners() {
-  paneEvents.on(PANE_EVENT_SPACE_HOVER, ({ urn }) => {
-    const entry = layersBySpaceUrn.get(urn);
+  paneEvents.on(PANE_EVENT_ENTITY_HIGHLIGHT, ({ urn, shouldPan = false }) => {
+    const entry = layersByEntityUrn.get(urn);
     if (!entry) return;
+
+    currentHoveredEntityUrn = urn;
     entry.layer.setStyle(HIGHLIGHT_STYLE);
     entry.layer.bringToFront();
+    if (shouldPan || isPanModifierDown()) {
+      panToLayerIfOutOfView(entry.layer);
+    }
+
+    hideActiveAncestorOutline();
+    if (currentResourceProfile !== 'concept') return;
+
+    void showAncestorOutlineForHoveredEntity(urn);
   });
-  paneEvents.on(PANE_EVENT_SPACE_UNHOVER, ({ urn }) => {
-    const entry = layersBySpaceUrn.get(urn);
+  paneEvents.on(PANE_EVENT_ENTITY_CLEAR, ({ urn }) => {
+    const entry = layersByEntityUrn.get(urn);
     if (!entry) return;
+
+    if (currentHoveredEntityUrn === urn) currentHoveredEntityUrn = null;
+    hideActiveAncestorOutline();
     entry.layer.setStyle(entry.defaultStyle);
+  });
+
+  paneEvents.on(PANE_EVENT_ENTITY_HIGHLIGHT, ({ urn, source }) => {
+    if (source !== 'map') return;
+    highlightAndScrollToFirstAssociatedImage(urn);
+  });
+
+  paneEvents.on(PANE_EVENT_ENTITY_CLEAR, ({ source }) => {
+    if (source !== 'map') return;
+    clearActiveMapHoverImage();
   });
 }
 
@@ -964,6 +1261,7 @@ async function loadEntity(rawId) {
   const provisionalLayout = normalizePaneLayout(currentPaneLayoutOverride || currentPaneLayout, DEFAULT_PANE_LAYOUT);
   applyPaneLayout(provisionalLayout);
   clearMapLayers();
+  clearImageAssociations();
 
   renderLoadingInSlot(getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.INFO));
   renderLoadingInSlot(getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES));
@@ -1072,6 +1370,9 @@ function handleRouteChange() {
 window.addEventListener('hashchange', handleRouteChange);
 
 document.addEventListener('DOMContentLoaded', () => {
+  syncHighlightCssVars();
+  initModifierKeyTracking();
+
   const initialHashState = parseHashState();
   currentPaneLayoutOverride = initialHashState.layoutOverride;
   applyRatiosFromHashState(initialHashState);
