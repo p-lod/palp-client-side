@@ -487,9 +487,12 @@ function applyPaneLayout(layout) {
 
 const MIN_PANE_RATIO = 0.2;  // 20% minimum for any column/row
 const MAX_PANE_RATIO = 0.8;  // 80% maximum
+const DEFAULT_MAP_VIEW = Object.freeze({ lat: 40.7506, lng: 14.4890, zoom: 15 });
+const MAP_VIEW_EPSILON = Object.freeze({ latLng: 0.000001, zoom: 0.01 });
 
 let currentColSplit = 0.5;  // left column width ratio
 let currentRowSplit = 0.5;  // top row height ratio
+let pendingMapViewOverride = null; // { lat, lng, zoom } from URL hash
 
 function parseHashState() {
   const rawHash = location.hash.slice(1);
@@ -499,12 +502,21 @@ function parseHashState() {
   const params = new URLSearchParams(queryStr || '');
   const col = parseFloat(params.get('col-split'));
   const row = parseFloat(params.get('row-split'));
+  const mapLat = parseFloat(params.get('map-lat'));
+  const mapLng = parseFloat(params.get('map-lng'));
+  const mapZoom = parseFloat(params.get('map-z'));
   const layoutOverride = parsePaneLayout(params.get('layout'));
+
+  const hasValidMapView =
+    !isNaN(mapLat) && mapLat >= -90 && mapLat <= 90 &&
+    !isNaN(mapLng) && mapLng >= -180 && mapLng <= 180 &&
+    !isNaN(mapZoom) && mapZoom >= 0;
 
   return {
     id,
     colSplit: !isNaN(col) && col > 0 && col < 1 ? col : null,
     rowSplit: !isNaN(row) && row > 0 && row < 1 ? row : null,
+    mapView: hasValidMapView ? { lat: mapLat, lng: mapLng, zoom: mapZoom } : null,
     layoutOverride,
   };
 }
@@ -530,6 +542,15 @@ function buildHash(id, layoutOverride = currentPaneLayoutOverride) {
   const rowSplitFixed = currentRowSplit.toFixed(3);
   if (colSplitFixed !== '0.500') params.set('col-split', colSplitFixed);
   if (rowSplitFixed !== '0.500') params.set('row-split', rowSplitFixed);
+
+  if (leafletMap && !isMapAtDefaultView()) {
+    const center = leafletMap.getCenter();
+    const zoom = leafletMap.getZoom();
+    params.set('map-lat', center.lat.toFixed(6));
+    params.set('map-lng', center.lng.toFixed(6));
+    params.set('map-z', zoom.toFixed(2));
+  }
+
   if (layoutOverride) params.set('layout', encodePaneLayout(layoutOverride));
   const query = params.toString();
   return query ? `#${encodeURIComponent(shortId)}?${query}` : `#${encodeURIComponent(shortId)}`;
@@ -709,14 +730,44 @@ function ensureMapInitialized(slotEl) {
   if (!leafletMap) {
     leafletMap = L.map(container, { zoomControl: true });
     L.tileLayer('http://palp.art/xyz-tiles/{z}/{x}/{y}.png', {
-      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      attribution: '<a href="https://websites.umass.edu/pbmp/">PBMP</a>',
       maxZoom: 19,
     }).addTo(leafletMap);
     layerGroup = L.layerGroup().addTo(leafletMap);
-    leafletMap.setView([40.7506, 14.4890], 15);
+    leafletMap.setView([DEFAULT_MAP_VIEW.lat, DEFAULT_MAP_VIEW.lng], DEFAULT_MAP_VIEW.zoom);
   } else {
     leafletMap.invalidateSize();
   }
+}
+
+function isMapAtDefaultView() {
+  if (!leafletMap) return true;
+
+  const center = leafletMap.getCenter();
+  const zoom = leafletMap.getZoom();
+  return (
+    Math.abs(center.lat - DEFAULT_MAP_VIEW.lat) <= MAP_VIEW_EPSILON.latLng
+    && Math.abs(center.lng - DEFAULT_MAP_VIEW.lng) <= MAP_VIEW_EPSILON.latLng
+    && Math.abs(zoom - DEFAULT_MAP_VIEW.zoom) <= MAP_VIEW_EPSILON.zoom
+  );
+}
+
+function applyPendingMapViewOverride() {
+  if (!leafletMap || !pendingMapViewOverride) return;
+
+  const { lat, lng, zoom } = pendingMapViewOverride;
+  leafletMap.setView([lat, lng], zoom, { animate: false });
+  pendingMapViewOverride = null;
+}
+
+function initMapUrlSync() {
+  if (!leafletMap || leafletMap.__plodUrlSyncBound) return;
+  leafletMap.__plodUrlSyncBound = true;
+
+  const syncUrl = () => updateUrlWithRatios();
+  leafletMap.on('moveend', syncUrl);
+  leafletMap.on('zoomend', syncUrl);
+  leafletMap.on('dragend', syncUrl);
 }
 
 function clearMapLayers() {
@@ -1175,6 +1226,7 @@ function initMapHoverListeners() {
 
 function renderMap(selfItem, childItems, isSpatial, conceptDetailLevel, slotEl, labelEl) {
   ensureMapInitialized(slotEl);
+  initMapUrlSync();
   if (!leafletMap || !layerGroup) return;
 
   clearMapLayers();
@@ -1208,6 +1260,9 @@ function renderMap(selfItem, childItems, isSpatial, conceptDetailLevel, slotEl, 
     for (let i = 1; i < bounds.length; i++) combined = combined.extend(bounds[i]);
     leafletMap.fitBounds(combined, { padding: [24, 24] });
   }
+
+  applyPendingMapViewOverride();
+  updateUrlWithRatios();
 
   if (labelEl) {
     labelEl.textContent =
@@ -1359,6 +1414,7 @@ async function loadEntity(rawId) {
 function handleRouteChange() {
   const hashState = parseHashState();
   currentPaneLayoutOverride = hashState.layoutOverride;
+  pendingMapViewOverride = hashState.mapView;
 
   applyRatiosFromHashState(hashState);
   applyGridRatios();
