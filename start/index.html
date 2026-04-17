@@ -5,30 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Pompeii Artistic Landscape Project</title>
   <link rel="stylesheet" href="../style.css">
-</head>
-<body>
 
-  <header id="header">
-    <span id="app-title">Pompeii Artistic Landscape Project</span>
-    <div id="search-bar">
-      <input type="text" id="id-input" list="id-suggestions" placeholder="pompeii, athena, r4, …" autocomplete="off" spellcheck="false">
-      <datalist id="id-suggestions"></datalist>
-      <button type="submit" id="go-btn">Go</button>
-    </div>
-    <span id="current-id"></span>
-  </header>
-
-  <main>
-    <section class="intro">
-      <p>The Pompeii Artistic Landscape Project (PALP) is an online resource that supports site-wide discovery, mapping, analysis, and sharing of information about Pompeian artworks in their architectural and urban contexts. The goal of PALP is to dramatically increase the number of researchers and members of the public who can access, analyze, interpret, and share the artworks of the most richly documented urban environment of the Roman world: Pompeii.</p>
-    </section>
-  </main>
-
-  <footer>
-    <p>PALP is hosted at the University of Massachusetts-Amherst and funded by the Getty Foundation. The site is very much in development and will change regularly. View &#8216;pompeii&#8217; on <a href="https://p-lod.org">P-LOD</a>.</p>
-  </footer>
-
-  <style>
+    <style>
     main {
       flex: 1;
     }
@@ -43,6 +21,29 @@
     footer p { margin: 0; }
     footer a { color: #5b7fa6; }
   </style>
+</head>
+<body>
+
+  <header id="header">
+    <span id="app-title">Pompeii Artistic Landscape Project</span>
+    <div id="search-bar">
+      <input type="text" id="id-input" list="id-suggestions" placeholder="pompeii, athena, r4, …" autocomplete="off" spellcheck="false">
+      <datalist id="id-suggestions"></datalist>
+      <button type="submit" id="go-btn">Go</button>
+    </div>
+    <span id="current-id"></span>
+
+  </header>
+
+  <main>
+    <section class="intro">
+      <p>The Pompeii Artistic Landscape Project (PALP) is an online resource that supports site-wide discovery, mapping, analysis, and sharing of information about Pompeian artworks in their architectural and urban contexts. The goal of PALP is to dramatically increase the number of researchers and members of the public who can access, analyze, interpret, and share the artworks of the most richly documented urban environment of the Roman world: Pompeii.</p>
+    </section>
+  </main>
+
+  <footer>
+    <p>PALP is hosted at the University of Massachusetts-Amherst and funded by the Getty Foundation. The site is very much in development and will change regularly. View &#8216;pompeii&#8217; on <a href="https://p-lod.org">P-LOD</a>.</p>
+  </footer>
 
   <script>
     (function () {
@@ -158,7 +159,7 @@
           return;
         }
         const resolved = resolveMap.get(input.toLowerCase()) || input;
-        window.location.href = `../browse/#${encodeURIComponent(resolved)}`;
+        window.location.href = `../browse/#${encodeURIComponent(extractShortId(resolved))}`;
       }
 
       function debounce(fn, ms) {

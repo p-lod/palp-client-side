@@ -7,7 +7,12 @@
     (function () {
       var hash = window.location.hash;
       if (hash) {
-        window.location.replace('browse/' + hash);
+        var raw = hash.slice(1);
+        var parts = raw.split('?');
+        var idPart = decodeURIComponent(parts[0] || '');
+        var queryPart = parts[1] ? ('?' + parts[1]) : '';
+        var shortId = idPart.replace(/^urn:p-lod:id:/, '') || 'pompeii';
+        window.location.replace('browse/#' + encodeURIComponent(shortId) + queryPart);
       } else {
         window.location.replace('browse/#pompeii');
       }

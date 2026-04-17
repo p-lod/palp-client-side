@@ -98,6 +98,27 @@ let currentPaneLayout = { ...DEFAULT_PANE_LAYOUT };
 let currentPaneLayoutOverride = null;
 let currentResourceProfile = 'default';
 
+// ── Inter-pane event bus ──────────────────────────────────────────────────────
+
+const PANE_EVENT_SPACE_HOVER   = 'space:hover';
+const PANE_EVENT_SPACE_UNHOVER = 'space:unhover';
+
+const paneEvents = (() => {
+  const handlers = new Map();
+  return {
+    on(event, fn) {
+      if (!handlers.has(event)) handlers.set(event, new Set());
+      handlers.get(event).add(fn);
+    },
+    off(event, fn) {
+      if (handlers.has(event)) handlers.get(event).delete(fn);
+    },
+    emit(event, data) {
+      if (handlers.has(event)) handlers.get(event).forEach(fn => fn(data));
+    },
+  };
+})();
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 function normalizeId(raw) {
@@ -503,12 +524,12 @@ function applyGridRatios() {
 }
 
 function buildHash(id, layoutOverride = currentPaneLayoutOverride) {
-  const normalizedId = normalizeId(id || DEFAULT_ID);
+  const shortId = extractShortId(normalizeId(id || DEFAULT_ID));
   const params = new URLSearchParams();
   params.set('col-split', currentColSplit.toFixed(3));
   params.set('row-split', currentRowSplit.toFixed(3));
   if (layoutOverride) params.set('layout', encodePaneLayout(layoutOverride));
-  return `#${encodeURIComponent(normalizedId)}?${params.toString()}`;
+  return `#${encodeURIComponent(shortId)}?${params.toString()}`;
 }
 
 function updateUrlWithRatios() {
@@ -557,6 +578,15 @@ function initDividerDrag() {
 let leafletMap  = null;
 let layerGroup  = null;
 let mapContainerEl = null;
+let layersBySpaceUrn = new Map();   // URN → { layer, defaultStyle } for hover linkage
+let spatialHoverCache = new Map();  // featureUrn → resolved layerUrn|null, cleared on navigation
+
+const HIGHLIGHT_STYLE = Object.freeze({
+  color: '#ff9900',
+  weight: 4,
+  fillColor: '#ffcc00',
+  fillOpacity: 0.5,
+});
 
 function ensureMapContainerInSlot(slotEl) {
   if (!slotEl) return null;
@@ -593,6 +623,8 @@ function ensureMapInitialized(slotEl) {
 
 function clearMapLayers() {
   if (layerGroup) layerGroup.clearLayers();
+  layersBySpaceUrn.clear();
+  spatialHoverCache.clear();
 }
 
 function renderPlaceholderInSlot(slotEl, text = '—') {
@@ -640,7 +672,8 @@ function renderInfo(triples, el) {
         return `<a href="${escAttr(v)}" target="_blank" rel="noopener noreferrer">${escHtml(v)}</a>`;
       }
       if (String(v).startsWith('urn:p-lod:id:')) {
-        return `<a href="#" data-navigate="${escAttr(v)}">${escHtml(extractShortId(v))}</a>`;
+        const short = extractShortId(v);
+        return `<a href="#" data-navigate="${escAttr(short)}">${escHtml(short)}</a>`;
       }
       return escHtml(String(v));
     }).join('<br>');
@@ -696,7 +729,13 @@ function renderImages(images, el) {
 
   el.innerHTML = '<p class="loading">Loading images…</p>';
 
-  Promise.all(images.slice(0, 12).map(resolveImageUrl)).then(results => {
+  // Build feature URN lookup before resolving URLs (resolveImageUrl discards the feature field)
+  const featureByUrn = new Map();
+  for (const img of images.slice(0, 100)) {
+    if (img && img.urn && img.feature) featureByUrn.set(img.urn, img.feature);
+  }
+
+  Promise.all(images.slice(0, 100).map(resolveImageUrl)).then(results => {
     const valid = results.filter(Boolean);
     if (!valid.length) {
       el.innerHTML = '<p class="placeholder">No images available.</p>';
@@ -706,17 +745,99 @@ function renderImages(images, el) {
     let html = '<div class="image-grid">';
     for (const { urn, url } of valid) {
       const short = extractShortId(urn);
+      const featureUrn = featureByUrn.get(urn) || '';
+      const featureAttr = featureUrn ? ` data-feature-urn="${escAttr(featureUrn)}"` : '';
       if (url) {
-        html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer">` +
+        html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer"${featureAttr}>` +
                 `<img src="${escAttr(url)}" alt="${escAttr(short)}" title="${escAttr(short)}" loading="lazy">` +
                 `</a>`;
       } else {
-        html += `<div class="image-urn-fallback" title="${escAttr(urn)}">${escHtml(short)}</div>`;
+        html += `<div class="image-urn-fallback"${featureAttr} title="${escAttr(urn)}">${escHtml(short)}</div>`;
       }
     }
     html += '</div>';
     el.innerHTML = html;
+    wireSpatialImageHoverEvents(el);
   });
+}
+
+function wireImageHoverEvents(containerEl) {
+  containerEl.querySelectorAll('[data-space-urn]').forEach(el => {
+    const urn = el.dataset.spaceUrn;
+    el.addEventListener('mouseenter', () => paneEvents.emit(PANE_EVENT_SPACE_HOVER,   { urn }));
+    el.addEventListener('mouseleave', () => paneEvents.emit(PANE_EVENT_SPACE_UNHOVER, { urn }));
+  });
+}
+
+async function resolveFeatureToLayer(featureUrn) {
+  if (spatialHoverCache.has(featureUrn)) return spatialHoverCache.get(featureUrn);
+
+  // Direct match (edge case: feature URN is itself a registered layer)
+  if (layersBySpaceUrn.has(featureUrn)) {
+    spatialHoverCache.set(featureUrn, featureUrn);
+    return featureUrn;
+  }
+
+  try {
+    const shortId = extractShortId(featureUrn);
+    const r = await fetch(`${API_BASE}/spatial-ancestors/${encodeURIComponent(shortId)}`);
+    if (!r.ok) { spatialHoverCache.set(featureUrn, null); return null; }
+    const ancestors = await r.json();
+    if (Array.isArray(ancestors)) {
+      for (const a of ancestors) {
+        if (a.urn && layersBySpaceUrn.has(a.urn)) {
+          spatialHoverCache.set(featureUrn, a.urn);
+          return a.urn;
+        }
+      }
+    }
+  } catch (_) { /* ignore */ }
+
+  spatialHoverCache.set(featureUrn, null);
+  return null;
+}
+
+function wireSpatialImageHoverEvents(containerEl) {
+  containerEl.querySelectorAll('[data-feature-urn]').forEach(el => {
+    const featureUrn = el.dataset.featureUrn;
+    let resolvedUrn = null;
+    el.addEventListener('mouseenter', async () => {
+      resolvedUrn = await resolveFeatureToLayer(featureUrn);
+      if (resolvedUrn && el.matches(':hover')) {
+        paneEvents.emit(PANE_EVENT_SPACE_HOVER, { urn: resolvedUrn });
+      }
+    });
+    el.addEventListener('mouseleave', () => {
+      if (resolvedUrn) paneEvents.emit(PANE_EVENT_SPACE_UNHOVER, { urn: resolvedUrn });
+    });
+  });
+}
+
+function renderConceptImages(depictedItems, el) {
+  if (!el) return;
+
+  const items = (depictedItems || []).slice(0, 100);
+  if (!items.length) {
+    el.innerHTML = '<p class="placeholder">No images available.</p>';
+    return;
+  }
+
+  let html = '<div class="image-grid">';
+  for (const item of items) {
+    const spaceUrn = item.urn || '';
+    const url      = item.l_img_url || null;
+    const short    = extractShortId(spaceUrn);
+    if (url) {
+      html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer" data-space-urn="${escAttr(spaceUrn)}">` +
+              `<img src="${escAttr(url)}" alt="${escAttr(short)}" title="${escAttr(short)}" loading="lazy">` +
+              `</a>`;
+    } else if (spaceUrn) {
+      html += `<div class="image-urn-fallback" data-space-urn="${escAttr(spaceUrn)}" title="${escAttr(spaceUrn)}">${escHtml(short)}</div>`;
+    }
+  }
+  html += '</div>';
+  el.innerHTML = html;
+  wireImageHoverEvents(el);
 }
 
 // ── Panel: Map ────────────────────────────────────────────────────────────────
@@ -737,7 +858,22 @@ function addGeoJsonLayer(item, styleOpts, clickable) {
   });
 
   layer.addTo(layerGroup);
+  if (item.urn) layersBySpaceUrn.set(item.urn, { layer, defaultStyle: { ...styleOpts } });
   return layer;
+}
+
+function initMapHoverListeners() {
+  paneEvents.on(PANE_EVENT_SPACE_HOVER, ({ urn }) => {
+    const entry = layersBySpaceUrn.get(urn);
+    if (!entry) return;
+    entry.layer.setStyle(HIGHLIGHT_STYLE);
+    entry.layer.bringToFront();
+  });
+  paneEvents.on(PANE_EVENT_SPACE_UNHOVER, ({ urn }) => {
+    const entry = layersBySpaceUrn.get(urn);
+    if (!entry) return;
+    entry.layer.setStyle(entry.defaultStyle);
+  });
 }
 
 function renderMap(selfItem, childItems, isSpatial, conceptDetailLevel, slotEl, labelEl) {
@@ -815,8 +951,7 @@ async function fetchDepictedWhereWithSpaceFallback(shortId) {
 // ── Navigation ────────────────────────────────────────────────────────────────
 
 function navigate(id) {
-  const normalId = normalizeId(id);
-  location.hash = buildHash(normalId, currentPaneLayoutOverride);
+  location.hash = buildHash(id, currentPaneLayoutOverride);
 }
 
 async function loadEntity(rawId) {
@@ -858,20 +993,17 @@ async function loadEntity(rawId) {
     currentResourceProfile
   );
 
-  // Step 2: parallel fetches — images + map children
+  // Step 2: parallel fetches — images (spatial only) + map/concept children
   const [imagesRes, mapRes] = await Promise.allSettled([
-    fetch(`${API_BASE}/images/${encodeURIComponent(shortId)}`)
-      .then(r => r.ok ? r.json() : []).catch(() => []),
+    isSpatial
+      ? fetch(`${API_BASE}/images/${encodeURIComponent(shortId)}`)
+          .then(r => r.ok ? r.json() : []).catch(() => [])
+      : Promise.resolve(null),
     isSpatial
       ? fetch(`${API_BASE}/spatial-children/${encodeURIComponent(shortId)}`)
           .then(r => r.ok ? r.json() : []).catch(() => [])
       : fetchDepictedWhereWithSpaceFallback(shortId),
   ]);
-
-  renderImages(
-    imagesRes.status === 'fulfilled' ? imagesRes.value : [],
-    getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES)
-  );
 
   let childItems = [];
   let conceptDetailLevel = 'feature';
@@ -882,6 +1014,18 @@ async function loadEntity(rawId) {
       childItems = (mapRes.value && mapRes.value.items) || [];
       conceptDetailLevel = (mapRes.value && mapRes.value.detailLevel) || 'feature';
     }
+  }
+
+  if (isSpatial) {
+    renderImages(
+      imagesRes.status === 'fulfilled' ? imagesRes.value : [],
+      getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES)
+    );
+  } else {
+    renderConceptImages(
+      childItems,
+      getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES)
+    );
   }
 
   // Build the self-boundary item for spatial entities
@@ -935,6 +1079,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initDividerDrag();
 
   applyPaneLayout(currentPaneLayoutOverride || DEFAULT_PANE_LAYOUT);
+  initMapHoverListeners();
 
   // Header controls
   const input = document.getElementById('id-input');
