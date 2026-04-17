@@ -615,6 +615,7 @@ let isCtrlKeyDown = false;
 let firstImageElByEntityUrn = new Map(); // spatial/entity URN -> first image tile element
 let activeMapHoverImageEl = null;
 let imageAssociationBuildToken = 0;
+let attentionPulseTimeoutByUrn = new Map(); // URN -> active pulse timeout id
 
 const HIGHLIGHT_STYLE = Object.freeze({
   color: '#ff9900',
@@ -675,6 +676,49 @@ function highlightAndScrollToFirstAssociatedImage(entityUrn) {
   activeMapHoverImageEl = imageEl;
   setImageHoverState(imageEl, true);
   imageEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+}
+
+function cancelAttentionPulseForUrn(urn) {
+  if (!attentionPulseTimeoutByUrn.has(urn)) return;
+  clearTimeout(attentionPulseTimeoutByUrn.get(urn));
+  attentionPulseTimeoutByUrn.delete(urn);
+}
+
+function cancelAllAttentionPulses() {
+  for (const timeoutId of attentionPulseTimeoutByUrn.values()) {
+    clearTimeout(timeoutId);
+  }
+  attentionPulseTimeoutByUrn.clear();
+}
+
+function shouldRunFarZoomAttentionPulse(source) {
+  return source !== 'map';
+}
+
+function runFarZoomAttentionPulse(urn, entry) {
+  if (!entry || !entry.layer) return;
+
+  cancelAttentionPulseForUrn(urn);
+
+  entry.layer.setStyle({ ...HIGHLIGHT_STYLE, color: '#ffe066', weight: 12, fillOpacity: 0.85 });
+  entry.layer.bringToFront();
+
+  const timeoutId = setTimeout(() => {
+    if (currentHoveredEntityUrn !== urn) return;
+    entry.layer.setStyle({ ...HIGHLIGHT_STYLE, color: '#ffb300', weight: 8, fillOpacity: 0.68 });
+    entry.layer.bringToFront();
+
+    const settleTimeoutId = setTimeout(() => {
+      if (currentHoveredEntityUrn !== urn) return;
+      entry.layer.setStyle(HIGHLIGHT_STYLE);
+      entry.layer.bringToFront();
+      attentionPulseTimeoutByUrn.delete(urn);
+    }, 140);
+
+    attentionPulseTimeoutByUrn.set(urn, settleTimeoutId);
+  }, 140);
+
+  attentionPulseTimeoutByUrn.set(urn, timeoutId);
 }
 
 function initModifierKeyTracking() {
@@ -771,6 +815,7 @@ function initMapUrlSync() {
 }
 
 function clearMapLayers() {
+  cancelAllAttentionPulses();
   if (layerGroup) layerGroup.clearLayers();
   layersByEntityUrn.clear();
   spatialHoverCache.clear();
@@ -1188,13 +1233,20 @@ function panToLayerIfOutOfView(layer) {
 }
 
 function initMapHoverListeners() {
-  paneEvents.on(PANE_EVENT_ENTITY_HIGHLIGHT, ({ urn, shouldPan = false }) => {
+  paneEvents.on(PANE_EVENT_ENTITY_HIGHLIGHT, ({ urn, shouldPan = false, source = null }) => {
     const entry = layersByEntityUrn.get(urn);
     if (!entry) return;
 
     currentHoveredEntityUrn = urn;
-    entry.layer.setStyle(HIGHLIGHT_STYLE);
     entry.layer.bringToFront();
+
+    if (shouldRunFarZoomAttentionPulse(source)) {
+      runFarZoomAttentionPulse(urn, entry);
+    } else {
+      cancelAttentionPulseForUrn(urn);
+      entry.layer.setStyle(HIGHLIGHT_STYLE);
+    }
+
     if (shouldPan || isPanModifierDown()) {
       panToLayerIfOutOfView(entry.layer);
     }
@@ -1208,6 +1260,7 @@ function initMapHoverListeners() {
     const entry = layersByEntityUrn.get(urn);
     if (!entry) return;
 
+    cancelAttentionPulseForUrn(urn);
     if (currentHoveredEntityUrn === urn) currentHoveredEntityUrn = null;
     hideActiveAncestorOutline();
     entry.layer.setStyle(entry.defaultStyle);
