@@ -206,6 +206,31 @@ body {
   min-height: 0;
 }
 
+#map-focus-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  max-width: min(560px, calc(100% - 24px));
+  padding: 0.5rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--map-highlight-border) 55%, #ffffff 45%);
+  background: color-mix(in srgb, #1a1a1a 78%, transparent 22%);
+  color: #f7f7f7;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  text-align: center;
+  letter-spacing: 0.01em;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
+  pointer-events: none;
+  opacity: 0;
+  z-index: 450;
+}
+
+#map-focus-hint.is-visible {
+  animation: map-focus-hint-fade 3.4s ease;
+}
+
 /* Clickable vs. static GeoJSON layers */
 .plod-clickable {
   cursor: pointer;
@@ -361,6 +386,25 @@ body {
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.4; }
+}
+
+@keyframes map-focus-hint-fade {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(4px);
+  }
+  12% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  74% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(2px);
+  }
 }
 
 @keyframes image-highlight-pop {

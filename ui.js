@@ -616,6 +616,8 @@ let firstImageElByEntityUrn = new Map(); // spatial/entity URN -> first image ti
 let activeMapHoverImageEl = null;
 let imageAssociationBuildToken = 0;
 let attentionPulseTimeoutByUrn = new Map(); // URN -> active pulse timeout id
+let mapFocusHintEl = null;
+let mapFocusHintTimeoutId = null;
 
 const HIGHLIGHT_STYLE = Object.freeze({
   color: '#ff9900',
@@ -784,6 +786,41 @@ function ensureMapInitialized(slotEl) {
   }
 }
 
+function ensureMapFocusHintElement() {
+  if (!mapContainerEl) return null;
+
+  if (!mapFocusHintEl) {
+    mapFocusHintEl = document.createElement('div');
+    mapFocusHintEl.id = 'map-focus-hint';
+    mapFocusHintEl.textContent = 'Hold down option/alt key when hovering over image to focus map.';
+  }
+
+  if (mapFocusHintEl.parentElement !== mapContainerEl) {
+    mapContainerEl.appendChild(mapFocusHintEl);
+  }
+
+  return mapFocusHintEl;
+}
+
+function showMapFocusHint() {
+  const hintEl = ensureMapFocusHintElement();
+  if (!hintEl) return;
+
+  if (mapFocusHintTimeoutId) {
+    clearTimeout(mapFocusHintTimeoutId);
+    mapFocusHintTimeoutId = null;
+  }
+
+  hintEl.classList.remove('is-visible');
+  void hintEl.offsetWidth;
+  hintEl.classList.add('is-visible');
+
+  mapFocusHintTimeoutId = setTimeout(() => {
+    hintEl.classList.remove('is-visible');
+    mapFocusHintTimeoutId = null;
+  }, 3400);
+}
+
 function isMapAtDefaultView() {
   if (!leafletMap) return true;
 
@@ -816,6 +853,11 @@ function initMapUrlSync() {
 
 function clearMapLayers() {
   cancelAllAttentionPulses();
+  if (mapFocusHintTimeoutId) {
+    clearTimeout(mapFocusHintTimeoutId);
+    mapFocusHintTimeoutId = null;
+  }
+  if (mapFocusHintEl) mapFocusHintEl.classList.remove('is-visible');
   if (layerGroup) layerGroup.clearLayers();
   layersByEntityUrn.clear();
   spatialHoverCache.clear();
@@ -1075,7 +1117,7 @@ function wireImageHoverEvents(containerEl) {
 
     el.addEventListener('mouseenter', e => {
       setImageHoverState(el, true);
-      paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: shouldPanFromEvent(e) });
+      paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: shouldPanFromEvent(e), source: 'image' });
     });
     el.addEventListener('mouseleave', () => {
       setImageHoverState(el, false);
@@ -1083,7 +1125,7 @@ function wireImageHoverEvents(containerEl) {
     });
     el.addEventListener('focus', () => {
       setImageHoverState(el, true);
-      paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: isPanModifierDown() });
+      paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: isPanModifierDown(), source: 'image' });
     });
     el.addEventListener('blur', () => {
       setImageHoverState(el, false);
@@ -1138,7 +1180,7 @@ function wireSpatialImageHoverEvents(containerEl) {
       setImageHoverState(el, true);
       resolvedUrn = await resolveFeatureToLayer(featureUrn);
       if (resolvedUrn && el.matches(':hover')) {
-        paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: resolvedUrn, shouldPan });
+        paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: resolvedUrn, shouldPan, source: 'image' });
       }
     });
     el.addEventListener('mouseleave', () => {
@@ -1148,7 +1190,7 @@ function wireSpatialImageHoverEvents(containerEl) {
     el.addEventListener('focus', async () => {
       setImageHoverState(el, true);
       resolvedUrn = await resolveFeatureToLayer(featureUrn);
-      if (resolvedUrn) paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: resolvedUrn, shouldPan: isPanModifierDown() });
+      if (resolvedUrn) paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: resolvedUrn, shouldPan: isPanModifierDown(), source: 'image' });
     });
     el.addEventListener('blur', () => {
       setImageHoverState(el, false);
@@ -1232,6 +1274,20 @@ function panToLayerIfOutOfView(layer) {
   leafletMap.panTo(targetBounds.getCenter(), { animate: true });
 }
 
+function isLayerOutOfView(layer) {
+  if (!leafletMap || !layer || typeof layer.getBounds !== 'function') return false;
+
+  let targetBounds = null;
+  try {
+    targetBounds = layer.getBounds();
+  } catch (_) {
+    return false;
+  }
+
+  if (!targetBounds || !targetBounds.isValid()) return false;
+  return !leafletMap.getBounds().intersects(targetBounds);
+}
+
 function initMapHoverListeners() {
   paneEvents.on(PANE_EVENT_ENTITY_HIGHLIGHT, ({ urn, shouldPan = false, source = null }) => {
     const entry = layersByEntityUrn.get(urn);
@@ -1245,6 +1301,11 @@ function initMapHoverListeners() {
     } else {
       cancelAttentionPulseForUrn(urn);
       entry.layer.setStyle(HIGHLIGHT_STYLE);
+    }
+
+    const outOfView = isLayerOutOfView(entry.layer);
+    if (source === 'image' && outOfView && !shouldPan && !isPanModifierDown()) {
+      showMapFocusHint();
     }
 
     if (shouldPan || isPanModifierDown()) {
