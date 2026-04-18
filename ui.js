@@ -627,16 +627,55 @@ const imageModalState = {
   imageUrl: '',
   imageUrn: '',
   contextUrn: '',
+  geometryInitialized: false,
   triggerEl: null,
   suppressFocusHighlightEl: null,
   overlayEl: null,
   dialogEl: null,
+  headerEl: null,
   titleEl: null,
   imgEl: null,
   infoEl: null,
   closeBtnEl: null,
+  resizeHandleEl: null,
   eventsBound: false,
 };
+
+const imageModalDragState = {
+  isDragging: false,
+  pointerId: null,
+  startPointerX: 0,
+  startPointerY: 0,
+  startOffsetX: 0,
+  startOffsetY: 0,
+  offsetX: 0,
+  offsetY: 0,
+  bounds: null,
+  didDrag: false,
+  ignoreOverlayClickUntil: 0,
+  eventsBound: false,
+};
+
+const imageModalResizeState = {
+  isResizing: false,
+  pointerId: null,
+  startPointerX: 0,
+  startPointerY: 0,
+  startWidth: 0,
+  startHeight: 0,
+  widthPx: null,
+  heightPx: null,
+  didResize: false,
+  ignoreOverlayClickUntil: 0,
+  eventsBound: false,
+};
+
+const IMAGE_MODAL_INITIAL_GEOMETRY = Object.freeze({
+  widthPx: 760,
+  heightPx: 560,
+  offsetX: -90,
+  offsetY: 0,
+});
 
 const HIGHLIGHT_STYLE = Object.freeze({
   color: '#ff9900',
@@ -704,6 +743,333 @@ function clearImageAssociations() {
   clearActiveMapHoverImage();
 }
 
+function applyImageModalDragTransform() {
+  if (!imageModalState.dialogEl) return;
+
+  const x = imageModalDragState.offsetX;
+  const y = imageModalDragState.offsetY;
+  if (!x && !y) {
+    imageModalState.dialogEl.style.transform = '';
+    return;
+  }
+
+  imageModalState.dialogEl.style.transform = `translate(${x}px, ${y}px)`;
+}
+
+function getImageModalSizeLimits() {
+  const edge = 8;
+  const maxWidth = Math.max(180, window.innerWidth - (edge * 2));
+  const maxHeight = Math.max(140, window.innerHeight - (edge * 2));
+  const minWidth = Math.min(360, maxWidth);
+  const minHeight = Math.min(220, maxHeight);
+
+  return {
+    minWidth,
+    maxWidth,
+    minHeight,
+    maxHeight,
+  };
+}
+
+function applyImageModalResizeStyles() {
+  if (!imageModalState.dialogEl) return;
+
+  if (typeof imageModalResizeState.widthPx === 'number') {
+    imageModalState.dialogEl.style.width = `${imageModalResizeState.widthPx}px`;
+  } else {
+    imageModalState.dialogEl.style.removeProperty('width');
+  }
+
+  if (typeof imageModalResizeState.heightPx === 'number') {
+    imageModalState.dialogEl.style.height = `${imageModalResizeState.heightPx}px`;
+  } else {
+    imageModalState.dialogEl.style.removeProperty('height');
+  }
+}
+
+function clampImageModalSizeToViewport() {
+  const limits = getImageModalSizeLimits();
+
+  if (typeof imageModalResizeState.widthPx === 'number') {
+    imageModalResizeState.widthPx = Math.min(
+      limits.maxWidth,
+      Math.max(limits.minWidth, imageModalResizeState.widthPx)
+    );
+  }
+
+  if (typeof imageModalResizeState.heightPx === 'number') {
+    imageModalResizeState.heightPx = Math.min(
+      limits.maxHeight,
+      Math.max(limits.minHeight, imageModalResizeState.heightPx)
+    );
+  }
+}
+
+function syncImageModalGeometryToViewport() {
+  if (!imageModalState.dialogEl) return;
+
+  clampImageModalSizeToViewport();
+  applyImageModalResizeStyles();
+
+  imageModalDragState.bounds = computeImageModalDragBounds();
+  const clamped = clampImageModalOffset(imageModalDragState.offsetX, imageModalDragState.offsetY);
+  imageModalDragState.offsetX = clamped.x;
+  imageModalDragState.offsetY = clamped.y;
+  applyImageModalDragTransform();
+}
+
+function ensureImageModalInitialGeometry() {
+  if (imageModalState.geometryInitialized) return;
+
+  imageModalResizeState.widthPx = IMAGE_MODAL_INITIAL_GEOMETRY.widthPx;
+  imageModalResizeState.heightPx = IMAGE_MODAL_INITIAL_GEOMETRY.heightPx;
+  imageModalDragState.offsetX = IMAGE_MODAL_INITIAL_GEOMETRY.offsetX;
+  imageModalDragState.offsetY = IMAGE_MODAL_INITIAL_GEOMETRY.offsetY;
+
+  imageModalState.geometryInitialized = true;
+}
+
+function resetImageModalDragPosition() {
+  imageModalDragState.offsetX = 0;
+  imageModalDragState.offsetY = 0;
+  applyImageModalDragTransform();
+}
+
+function computeImageModalDragBounds() {
+  if (!imageModalState.dialogEl) {
+    return { minX: 0, maxX: 0, minY: 0, maxY: 0 };
+  }
+
+  const rect = imageModalState.dialogEl.getBoundingClientRect();
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const edge = 8;
+
+  // Bounds are expressed in absolute offset-space (translateX/translateY),
+  // so we must first recover the un-translated base rectangle.
+  const baseLeft = rect.left - imageModalDragState.offsetX;
+  const baseRight = rect.right - imageModalDragState.offsetX;
+  const baseTop = rect.top - imageModalDragState.offsetY;
+  const baseBottom = rect.bottom - imageModalDragState.offsetY;
+
+  return {
+    minX: edge - baseLeft,
+    maxX: (viewportWidth - edge) - baseRight,
+    minY: edge - baseTop,
+    maxY: (viewportHeight - edge) - baseBottom,
+  };
+}
+
+function clampImageModalOffset(x, y) {
+  const bounds = imageModalDragState.bounds || computeImageModalDragBounds();
+  return {
+    x: Math.min(bounds.maxX, Math.max(bounds.minX, x)),
+    y: Math.min(bounds.maxY, Math.max(bounds.minY, y)),
+  };
+}
+
+function endImageModalDrag(pointerId = null, markIgnoreOverlayClick = true) {
+  if (!imageModalDragState.isDragging) return;
+  if (pointerId !== null && imageModalDragState.pointerId !== pointerId) return;
+
+  const hadDragged = imageModalDragState.didDrag;
+  const activePointerId = imageModalDragState.pointerId;
+
+  imageModalDragState.isDragging = false;
+  imageModalDragState.pointerId = null;
+  imageModalDragState.bounds = null;
+  imageModalDragState.didDrag = false;
+
+  if (imageModalState.overlayEl) imageModalState.overlayEl.classList.remove('is-dragging');
+  if (imageModalState.headerEl && activePointerId !== null && imageModalState.headerEl.releasePointerCapture) {
+    try {
+      imageModalState.headerEl.releasePointerCapture(activePointerId);
+    } catch (_) {
+      // Ignore capture release failures from stale pointers.
+    }
+  }
+
+  window.removeEventListener('pointermove', onImageModalDragPointerMove);
+  window.removeEventListener('pointerup', onImageModalDragPointerUp);
+  window.removeEventListener('pointercancel', onImageModalDragPointerCancel);
+
+  if (markIgnoreOverlayClick && hadDragged) {
+    imageModalDragState.ignoreOverlayClickUntil = Date.now() + 180;
+  }
+}
+
+function onImageModalDragPointerMove(e) {
+  if (!imageModalDragState.isDragging) return;
+  if (e.pointerId !== imageModalDragState.pointerId) return;
+
+  e.preventDefault();
+
+  const dx = e.clientX - imageModalDragState.startPointerX;
+  const dy = e.clientY - imageModalDragState.startPointerY;
+  const proposedX = imageModalDragState.startOffsetX + dx;
+  const proposedY = imageModalDragState.startOffsetY + dy;
+  const clamped = clampImageModalOffset(proposedX, proposedY);
+
+  imageModalDragState.offsetX = clamped.x;
+  imageModalDragState.offsetY = clamped.y;
+  if (Math.abs(dx) > 2 || Math.abs(dy) > 2) imageModalDragState.didDrag = true;
+  applyImageModalDragTransform();
+}
+
+function onImageModalDragPointerUp(e) {
+  endImageModalDrag(e.pointerId, true);
+}
+
+function onImageModalDragPointerCancel(e) {
+  endImageModalDrag(e.pointerId, true);
+}
+
+function onImageModalDragPointerDown(e) {
+  if (!imageModalState.isOpen || !imageModalState.dialogEl) return;
+  if (e.button !== 0) return;
+  if (imageModalResizeState.isResizing) return;
+  if (e.target && e.target.closest('[data-image-modal-close]')) return;
+  if (e.target && e.target.closest('[data-image-modal-resize-handle]')) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+
+  imageModalDragState.isDragging = true;
+  imageModalDragState.pointerId = e.pointerId;
+  imageModalDragState.startPointerX = e.clientX;
+  imageModalDragState.startPointerY = e.clientY;
+  imageModalDragState.startOffsetX = imageModalDragState.offsetX;
+  imageModalDragState.startOffsetY = imageModalDragState.offsetY;
+  imageModalDragState.bounds = computeImageModalDragBounds();
+  imageModalDragState.didDrag = false;
+
+  if (imageModalState.overlayEl) imageModalState.overlayEl.classList.add('is-dragging');
+  if (imageModalState.headerEl && imageModalState.headerEl.setPointerCapture) {
+    try {
+      imageModalState.headerEl.setPointerCapture(e.pointerId);
+    } catch (_) {
+      // Ignore capture errors; drag still works via window listeners.
+    }
+  }
+
+  window.addEventListener('pointermove', onImageModalDragPointerMove);
+  window.addEventListener('pointerup', onImageModalDragPointerUp);
+  window.addEventListener('pointercancel', onImageModalDragPointerCancel);
+}
+
+function bindImageModalDragEvents() {
+  ensureImageModalInitialized();
+  if (imageModalDragState.eventsBound || !imageModalState.headerEl) return;
+
+  imageModalDragState.eventsBound = true;
+  imageModalState.headerEl.addEventListener('pointerdown', onImageModalDragPointerDown);
+
+  window.addEventListener('resize', () => {
+    if (!imageModalState.isOpen || imageModalDragState.isDragging || imageModalResizeState.isResizing) return;
+    syncImageModalGeometryToViewport();
+  });
+}
+
+function endImageModalResize(pointerId = null, markIgnoreOverlayClick = true) {
+  if (!imageModalResizeState.isResizing) return;
+  if (pointerId !== null && imageModalResizeState.pointerId !== pointerId) return;
+
+  const hadResized = imageModalResizeState.didResize;
+  const activePointerId = imageModalResizeState.pointerId;
+
+  imageModalResizeState.isResizing = false;
+  imageModalResizeState.pointerId = null;
+  imageModalResizeState.didResize = false;
+
+  if (imageModalState.overlayEl) imageModalState.overlayEl.classList.remove('is-resizing');
+  if (imageModalState.resizeHandleEl && activePointerId !== null && imageModalState.resizeHandleEl.releasePointerCapture) {
+    try {
+      imageModalState.resizeHandleEl.releasePointerCapture(activePointerId);
+    } catch (_) {
+      // Ignore capture release failures from stale pointers.
+    }
+  }
+
+  window.removeEventListener('pointermove', onImageModalResizePointerMove);
+  window.removeEventListener('pointerup', onImageModalResizePointerUp);
+  window.removeEventListener('pointercancel', onImageModalResizePointerCancel);
+
+  if (markIgnoreOverlayClick && hadResized) {
+    imageModalResizeState.ignoreOverlayClickUntil = Date.now() + 180;
+  }
+}
+
+function onImageModalResizePointerMove(e) {
+  if (!imageModalResizeState.isResizing) return;
+  if (e.pointerId !== imageModalResizeState.pointerId) return;
+
+  e.preventDefault();
+
+  const dx = e.clientX - imageModalResizeState.startPointerX;
+  const dy = e.clientY - imageModalResizeState.startPointerY;
+
+  const limits = getImageModalSizeLimits();
+  imageModalResizeState.widthPx = Math.min(
+    limits.maxWidth,
+    Math.max(limits.minWidth, imageModalResizeState.startWidth + dx)
+  );
+  imageModalResizeState.heightPx = Math.min(
+    limits.maxHeight,
+    Math.max(limits.minHeight, imageModalResizeState.startHeight + dy)
+  );
+
+  if (Math.abs(dx) > 2 || Math.abs(dy) > 2) imageModalResizeState.didResize = true;
+  syncImageModalGeometryToViewport();
+}
+
+function onImageModalResizePointerUp(e) {
+  endImageModalResize(e.pointerId, true);
+}
+
+function onImageModalResizePointerCancel(e) {
+  endImageModalResize(e.pointerId, true);
+}
+
+function onImageModalResizePointerDown(e) {
+  if (!imageModalState.isOpen || !imageModalState.dialogEl) return;
+  if (e.button !== 0) return;
+  if (imageModalDragState.isDragging) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+
+  const rect = imageModalState.dialogEl.getBoundingClientRect();
+
+  imageModalResizeState.isResizing = true;
+  imageModalResizeState.pointerId = e.pointerId;
+  imageModalResizeState.startPointerX = e.clientX;
+  imageModalResizeState.startPointerY = e.clientY;
+  imageModalResizeState.startWidth = rect.width;
+  imageModalResizeState.startHeight = rect.height;
+  imageModalResizeState.didResize = false;
+
+  if (imageModalState.overlayEl) imageModalState.overlayEl.classList.add('is-resizing');
+  if (imageModalState.resizeHandleEl && imageModalState.resizeHandleEl.setPointerCapture) {
+    try {
+      imageModalState.resizeHandleEl.setPointerCapture(e.pointerId);
+    } catch (_) {
+      // Ignore capture errors; resize still works via window listeners.
+    }
+  }
+
+  window.addEventListener('pointermove', onImageModalResizePointerMove);
+  window.addEventListener('pointerup', onImageModalResizePointerUp);
+  window.addEventListener('pointercancel', onImageModalResizePointerCancel);
+}
+
+function bindImageModalResizeEvents() {
+  ensureImageModalInitialized();
+  if (imageModalResizeState.eventsBound || !imageModalState.resizeHandleEl) return;
+
+  imageModalResizeState.eventsBound = true;
+  imageModalState.resizeHandleEl.addEventListener('pointerdown', onImageModalResizePointerDown);
+}
+
 function suppressMapToImageHighlightUntilPointerMove() {
   suppressMapToImageHighlight = true;
 }
@@ -739,16 +1105,19 @@ function ensureImageModalInitialized() {
         '</div>' +
         '<aside class="image-modal-info" aria-live="polite"></aside>' +
       '</div>' +
+      '<button type="button" class="image-modal-resize-handle" data-image-modal-resize-handle="true" aria-label="Resize image modal"></button>' +
     '</div>';
 
   document.body.appendChild(overlayEl);
 
   imageModalState.overlayEl = overlayEl;
   imageModalState.dialogEl = overlayEl.querySelector('.image-modal-dialog');
+  imageModalState.headerEl = overlayEl.querySelector('.image-modal-header');
   imageModalState.titleEl = overlayEl.querySelector('.image-modal-title');
   imageModalState.imgEl = overlayEl.querySelector('.image-modal-img');
   imageModalState.infoEl = overlayEl.querySelector('.image-modal-info');
   imageModalState.closeBtnEl = overlayEl.querySelector('.image-modal-close');
+  imageModalState.resizeHandleEl = overlayEl.querySelector('.image-modal-resize-handle');
 }
 
 function renderImageModalContent() {
@@ -779,6 +1148,8 @@ function setImageModalVisibility(isOpen) {
   imageModalState.isOpen = !!isOpen;
   imageModalState.overlayEl.hidden = !isOpen;
   imageModalState.overlayEl.classList.toggle('is-open', !!isOpen);
+  if (!isOpen) imageModalState.overlayEl.classList.remove('is-dragging');
+  if (!isOpen) imageModalState.overlayEl.classList.remove('is-resizing');
   imageModalState.overlayEl.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
   document.body.classList.toggle('has-image-modal', !!isOpen);
 }
@@ -806,6 +1177,7 @@ function openImageModal(payload = {}) {
   if (!imageUrl) return;
 
   ensureImageModalInitialized();
+  ensureImageModalInitialGeometry();
 
   imageModalState.imageUrl = imageUrl;
   imageModalState.imageUrn = String(payload.imageUrn || '');
@@ -818,6 +1190,7 @@ function openImageModal(payload = {}) {
   renderImageModalContent();
 
   setImageModalVisibility(true);
+  syncImageModalGeometryToViewport();
   imageModalState.closeBtnEl.focus();
 }
 
@@ -825,6 +1198,9 @@ function closeImageModal() {
   if (!imageModalState.overlayEl) return;
   const overlayIsVisible = !imageModalState.overlayEl.hidden || imageModalState.overlayEl.classList.contains('is-open');
   if (!imageModalState.isOpen && !overlayIsVisible) return;
+
+  endImageModalDrag(null, false);
+  endImageModalResize(null, false);
 
   setImageModalVisibility(false);
 
@@ -848,6 +1224,8 @@ function closeImageModal() {
 
 function initImageModalEvents() {
   ensureImageModalInitialized();
+  bindImageModalDragEvents();
+  bindImageModalResizeEvents();
   setImageModalVisibility(false);
   if (imageModalState.eventsBound) return;
   imageModalState.eventsBound = true;
@@ -861,6 +1239,13 @@ function initImageModalEvents() {
   });
 
   imageModalState.overlayEl.addEventListener('click', e => {
+    const ignoreUntil = Math.max(
+      imageModalDragState.ignoreOverlayClickUntil,
+      imageModalResizeState.ignoreOverlayClickUntil
+    );
+    if (imageModalDragState.isDragging || imageModalResizeState.isResizing || Date.now() < ignoreUntil) {
+      return;
+    }
     if (e.target === imageModalState.overlayEl || e.target.closest('[data-image-modal-close]')) {
       paneEvents.emit(UI_EVENT_IMAGE_MODAL_CLOSE);
     }
@@ -869,6 +1254,14 @@ function initImageModalEvents() {
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && imageModalState.isOpen) {
       e.preventDefault();
+      if (imageModalDragState.isDragging) {
+        endImageModalDrag(null, false);
+        return;
+      }
+      if (imageModalResizeState.isResizing) {
+        endImageModalResize(null, false);
+        return;
+      }
       paneEvents.emit(UI_EVENT_IMAGE_MODAL_CLOSE);
     }
   });

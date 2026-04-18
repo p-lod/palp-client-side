@@ -402,11 +402,13 @@ body.has-image-modal {
   border: 1px solid #2c2c2c;
   border-radius: 12px;
   overflow: hidden;
+  position: relative;
   display: grid;
   grid-template-rows: auto 1fr;
   background: #151515;
   color: #f3f3f3;
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.45);
+  will-change: transform;
 }
 
 .image-modal-header {
@@ -417,6 +419,39 @@ body.has-image-modal {
   padding: 0.65rem 0.8rem;
   border-bottom: 1px solid #2e2e2e;
   background: #1d1d1d;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+
+.image-modal-overlay.is-dragging .image-modal-header {
+  cursor: grabbing;
+}
+
+.image-modal-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background:
+    linear-gradient(135deg, transparent 0 42%, #7a7a7a 42% 49%, transparent 49% 57%, #7a7a7a 57% 64%, transparent 64% 72%, #7a7a7a 72% 79%, transparent 79% 100%);
+  cursor: nwse-resize;
+  opacity: 0.86;
+  touch-action: none;
+}
+
+.image-modal-resize-handle:hover,
+.image-modal-resize-handle:focus-visible {
+  opacity: 1;
+  outline: none;
+}
+
+.image-modal-overlay.is-resizing .image-modal-resize-handle {
+  opacity: 1;
 }
 
 .image-modal-title {
