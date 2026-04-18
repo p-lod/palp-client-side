@@ -10,11 +10,8 @@ const SPATIAL_TYPES = new Set([
   'urn:p-lod:id:property',
   'urn:p-lod:id:street',
   'urn:p-lod:id:insula',
-  'urn:p-lod:id:vicolo',
-  'urn:p-lod:id:garden',
-  'urn:p-lod:id:room',
   'urn:p-lod:id:space',
-  'urn:p-lod:id:structure',
+  'urn:p-lod:id:garden',
 ]);
 
 // Human-readable labels for common RDF predicates
@@ -618,12 +615,24 @@ let imageAssociationBuildToken = 0;
 let attentionPulseTimeoutByUrn = new Map(); // URN -> active pulse timeout id
 let mapFocusHintEl = null;
 let mapFocusHintTimeoutId = null;
+let hierarchyState = null;
+let hierarchyPreviewLayer = null;
+let hierarchyPreviewUrn = null;
+let hierarchyPreviewRequestToken = 0;
 
 const HIGHLIGHT_STYLE = Object.freeze({
   color: '#ff9900',
   weight: 4,
   fillColor: '#ffcc00',
   fillOpacity: 0.5,
+});
+
+const HIERARCHY_PREVIEW_STYLE = Object.freeze({
+  color: '#ff9900',
+  weight: 5,
+  fillColor: '#ffcc00',
+  fillOpacity: 0.16,
+  opacity: 1,
 });
 
 const ANCESTOR_OUTLINE_STYLE = Object.freeze({
@@ -853,6 +862,7 @@ function initMapUrlSync() {
 
 function clearMapLayers() {
   cancelAllAttentionPulses();
+  clearHierarchyPreview();
   if (mapFocusHintTimeoutId) {
     clearTimeout(mapFocusHintTimeoutId);
     mapFocusHintTimeoutId = null;
@@ -993,6 +1003,307 @@ function renderHierarchyPlaceholder(slotEl, profile) {
   if (profile === 'concept') msg = 'Concept hierarchy browser coming soon.';
   if (profile === 'spatial') msg = 'Spatial hierarchy browser coming soon.';
   slotEl.innerHTML = `<p class="placeholder">${escHtml(msg)}</p>`;
+}
+
+function normalizeHierarchyNode(item) {
+  if (!item) return null;
+
+  const rawUrn = typeof item === 'string' ? item : (item.urn || item.id || item.p_lod_id || '');
+  const urn = normalizeId(rawUrn);
+  if (!urn) return null;
+
+  const label = typeof item.label === 'string' && item.label.trim()
+    ? item.label.trim()
+    : extractShortId(urn);
+  const type = item.type ? extractShortId(item.type) : '';
+
+  return {
+    urn,
+    label,
+    type,
+    geojson: item.geojson || null,
+  };
+}
+
+function normalizeHierarchyNodes(items, excludeUrns = new Set()) {
+  if (!Array.isArray(items)) return [];
+
+  const out = [];
+  const seen = new Set();
+  for (const item of items) {
+    const normalized = normalizeHierarchyNode(item);
+    if (!normalized) continue;
+    if (excludeUrns.has(normalized.urn)) continue;
+    if (seen.has(normalized.urn)) continue;
+    seen.add(normalized.urn);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function upsertHierarchyNode(state, node) {
+  if (!state || !node || !node.urn) return null;
+
+  const existing = state.nodeMetaByUrn.get(node.urn);
+  if (existing) {
+    if (!existing.label && node.label) existing.label = node.label;
+    if (!existing.type && node.type) existing.type = node.type;
+    if (!existing.geojson && node.geojson) existing.geojson = node.geojson;
+    return existing;
+  }
+
+  const cloned = { ...node };
+  state.nodeMetaByUrn.set(node.urn, cloned);
+  return cloned;
+}
+
+function recordHierarchyNodes(state, nodes) {
+  return nodes.map(node => upsertHierarchyNode(state, node)).filter(Boolean);
+}
+
+async function fetchHierarchyItems(endpoint) {
+  try {
+    const r = await fetch(endpoint);
+    if (!r.ok) return [];
+    const payload = await r.json();
+    return Array.isArray(payload) ? payload : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function fetchConceptualHierarchyAncestors(urn) {
+  const items = await fetchHierarchyItems(`${API_BASE}/conceptual-ancestors/${encodeURIComponent(extractShortId(urn))}`);
+  return normalizeHierarchyNodes(items, new Set([urn])).reverse();
+}
+
+async function fetchConceptualHierarchyChildren(urn) {
+  const items = await fetchHierarchyItems(`${API_BASE}/conceptual-children/${encodeURIComponent(extractShortId(urn))}`);
+  return normalizeHierarchyNodes(items, new Set([urn]));
+}
+
+async function fetchSpatialHierarchyAncestors(urn) {
+  const items = await fetchHierarchyItems(`${API_BASE}/spatial-ancestors/${encodeURIComponent(extractShortId(urn))}`);
+  return normalizeHierarchyNodes(items, new Set([urn])).reverse();
+}
+
+async function fetchSpatialHierarchyChildren(urn) {
+  const items = await fetchHierarchyItems(`${API_BASE}/spatial-children/${encodeURIComponent(extractShortId(urn))}`);
+  return normalizeHierarchyNodes(items, new Set([urn, DEFAULT_ID]));
+}
+
+function createHierarchyState(profile, currentNode, ancestors, children) {
+  const state = {
+    profile,
+    currentNode: { ...currentNode },
+    ancestors: [],
+    nodeMetaByUrn: new Map(),
+    childrenByParentUrn: new Map(),
+    expandedUrns: new Set([currentNode.urn]),
+    loadingUrns: new Set(),
+    leafUrns: new Set(),
+  };
+
+  upsertHierarchyNode(state, currentNode);
+  state.ancestors = recordHierarchyNodes(state, ancestors);
+  state.childrenByParentUrn.set(currentNode.urn, recordHierarchyNodes(state, children));
+  return state;
+}
+
+async function buildHierarchyState(profile, currentNode) {
+  if (!currentNode || !currentNode.urn) return null;
+
+  if (profile === 'concept') {
+    const [ancestors, children] = await Promise.all([
+      fetchConceptualHierarchyAncestors(currentNode.urn),
+      fetchConceptualHierarchyChildren(currentNode.urn),
+    ]);
+    return createHierarchyState('concept', currentNode, ancestors, children);
+  }
+
+  if (profile === 'spatial') {
+    const [ancestors, children] = await Promise.all([
+      fetchSpatialHierarchyAncestors(currentNode.urn),
+      fetchSpatialHierarchyChildren(currentNode.urn),
+    ]);
+    return createHierarchyState('spatial', currentNode, ancestors, children);
+  }
+
+  return null;
+}
+
+function getHierarchySlot() {
+  return getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER);
+}
+
+function renderHierarchyLine(node, kind = 'ancestor') {
+  const typeHtml = node.type ? `<span class="hierarchy-node-type">${escHtml(node.type)}</span>` : '';
+  return `<div class="hierarchy-node hierarchy-node-${kind}">` +
+         `<span class="hierarchy-node-label">${escHtml(node.label)}</span>${typeHtml}</div>`;
+}
+
+function renderHierarchyBranch(node, state) {
+  const children = state.childrenByParentUrn.get(node.urn) || [];
+  const isExpanded = state.expandedUrns.has(node.urn);
+  const isLoading = state.loadingUrns.has(node.urn);
+  const isLeaf = state.leafUrns.has(node.urn);
+  const typeHtml = node.type ? `<span class="hierarchy-node-type">${escHtml(node.type)}</span>` : '';
+
+  let toggleHtml = '<span class="hierarchy-toggle hierarchy-toggle-spacer"></span>';
+  if (isLoading) {
+    toggleHtml = '<span class="hierarchy-toggle hierarchy-toggle-loading">…</span>';
+  } else if (!isLeaf) {
+    toggleHtml = `<button type="button" class="hierarchy-toggle" data-hierarchy-toggle="${escAttr(node.urn)}" aria-label="Toggle descendants">${isExpanded && children.length ? '−' : '+'}</button>`;
+  }
+
+  const nestedHtml = isExpanded && children.length
+    ? `<ul class="hierarchy-children">${children.map(child => renderHierarchyBranch(child, state)).join('')}</ul>`
+    : '';
+
+  return `<li class="hierarchy-item">` +
+         `<div class="hierarchy-row">${toggleHtml}` +
+         `<button type="button" class="hierarchy-node hierarchy-node-child" data-hierarchy-preview="${escAttr(node.urn)}">` +
+         `<span class="hierarchy-node-label">${escHtml(node.label)}</span>${typeHtml}</button></div>${nestedHtml}</li>`;
+}
+
+function renderHierarchyState(slotEl, state) {
+  if (!slotEl || !state) return;
+
+  const children = state.childrenByParentUrn.get(state.currentNode.urn) || [];
+  const ancestorHtml = state.ancestors.length
+    ? `<div class="hierarchy-section"><div class="hierarchy-section-label-inline">Ancestors</div>` +
+      `<div class="hierarchy-ancestor-list">${state.ancestors.map(node => renderHierarchyLine(node, 'ancestor')).join('')}</div></div>`
+    : '';
+
+  const childrenHtml = children.length
+    ? `<ul class="hierarchy-tree">${children.map(node => renderHierarchyBranch(node, state)).join('')}</ul>`
+    : '<p class="placeholder">No child nodes.</p>';
+
+  slotEl.innerHTML = `<div class="hierarchy-browser hierarchy-browser-${escAttr(state.profile)}">` +
+    ancestorHtml +
+    `<div class="hierarchy-section"><div class="hierarchy-section-label-inline">Current</div>${renderHierarchyLine(state.currentNode, 'current')}</div>` +
+    `<div class="hierarchy-section"><div class="hierarchy-section-label-inline">Children</div>${childrenHtml}</div>` +
+    `</div>`;
+
+  wireHierarchyInteractions(slotEl);
+}
+
+function rerenderHierarchy() {
+  const slotEl = getHierarchySlot();
+  if (!slotEl) return;
+  if (!hierarchyState) {
+    renderHierarchyPlaceholder(slotEl, currentResourceProfile);
+    return;
+  }
+  renderHierarchyState(slotEl, hierarchyState);
+}
+
+function clearHierarchyPreview() {
+  hierarchyPreviewRequestToken += 1;
+  if (hierarchyPreviewLayer && layerGroup && layerGroup.hasLayer(hierarchyPreviewLayer)) {
+    layerGroup.removeLayer(hierarchyPreviewLayer);
+  }
+  hierarchyPreviewLayer = null;
+  hierarchyPreviewUrn = null;
+}
+
+function clearHierarchyState() {
+  hierarchyState = null;
+  clearHierarchyPreview();
+}
+
+async function ensureHierarchyNodeGeojson(urn) {
+  if (!hierarchyState) return null;
+
+  const node = hierarchyState.nodeMetaByUrn.get(urn);
+  if (!node) return null;
+  if (node.geojson && node.geojson !== 'None') return node.geojson;
+
+  try {
+    const r = await fetch(`${API_BASE}/geojson/${encodeURIComponent(extractShortId(urn))}`);
+    if (!r.ok) return null;
+    const payload = await r.json();
+    node.geojson = payload && payload.geojson ? payload.geojson : payload;
+    return node.geojson;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function previewHierarchyNode(urn) {
+  if (!urn || !hierarchyState || hierarchyState.currentNode.urn === urn) return;
+  if (hierarchyPreviewUrn === urn) return;
+
+  clearHierarchyPreview();
+  const requestToken = hierarchyPreviewRequestToken;
+  const geojsonData = await ensureHierarchyNodeGeojson(urn);
+  if (requestToken !== hierarchyPreviewRequestToken) return;
+
+  const parsed = parseGeoJson(geojsonData);
+  if (!parsed || !layerGroup) return;
+
+  hierarchyPreviewLayer = L.geoJSON(parsed, {
+    style: { ...HIERARCHY_PREVIEW_STYLE, className: 'plod-hierarchy-preview' },
+  }).addTo(layerGroup);
+  hierarchyPreviewLayer.bringToFront();
+  hierarchyPreviewUrn = urn;
+}
+
+async function toggleHierarchyNode(urn) {
+  if (!hierarchyState || !urn) return;
+
+  const state = hierarchyState;
+
+  if (state.loadingUrns.has(urn)) return;
+  if (state.childrenByParentUrn.has(urn)) {
+    if (state.expandedUrns.has(urn)) {
+      state.expandedUrns.delete(urn);
+    } else {
+      state.expandedUrns.add(urn);
+    }
+    rerenderHierarchy();
+    return;
+  }
+
+  state.loadingUrns.add(urn);
+  rerenderHierarchy();
+
+  const children = state.profile === 'concept'
+    ? await fetchConceptualHierarchyChildren(urn)
+    : await fetchSpatialHierarchyChildren(urn);
+
+  if (hierarchyState !== state || !state.loadingUrns.has(urn)) return;
+
+  state.loadingUrns.delete(urn);
+  const normalizedChildren = recordHierarchyNodes(state, children);
+  state.childrenByParentUrn.set(urn, normalizedChildren);
+  if (normalizedChildren.length) {
+    state.expandedUrns.add(urn);
+  } else {
+    state.leafUrns.add(urn);
+  }
+  rerenderHierarchy();
+}
+
+function wireHierarchyInteractions(slotEl) {
+  if (!slotEl) return;
+
+  slotEl.querySelectorAll('[data-hierarchy-toggle]').forEach(button => {
+    button.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      void toggleHierarchyNode(button.dataset.hierarchyToggle);
+    });
+  });
+
+  slotEl.querySelectorAll('[data-hierarchy-preview]').forEach(button => {
+    button.addEventListener('mouseenter', () => {
+      void previewHierarchyNode(button.dataset.hierarchyPreview);
+    });
+    button.addEventListener('focus', () => {
+      void previewHierarchyNode(button.dataset.hierarchyPreview);
+    });
+  });
 }
 
 // ── Panel: Info ───────────────────────────────────────────────────────────────
@@ -1429,6 +1740,7 @@ async function loadEntity(rawId) {
 
   const provisionalLayout = normalizePaneLayout(currentPaneLayoutOverride || currentPaneLayout, DEFAULT_PANE_LAYOUT);
   applyPaneLayout(provisionalLayout);
+  clearHierarchyState();
   clearMapLayers();
   clearImageAssociations();
 
@@ -1447,6 +1759,7 @@ async function loadEntity(rawId) {
   } catch (_) { /* ignore */ }
 
   const typeUrn   = (triples['http://www.w3.org/1999/02/22-rdf-syntax-ns#type'] || [])[0] || '';
+  const label     = (triples['http://www.w3.org/2000/01/rdf-schema#label'] || [])[0] || shortId;
   const isSpatial = SPATIAL_TYPES.has(typeUrn);
   const selfGjStr = (triples['urn:p-lod:id:geojson'] || [])[0] || null;
 
@@ -1460,8 +1773,18 @@ async function loadEntity(rawId) {
     currentResourceProfile
   );
 
-  // Step 2: parallel fetches — images (spatial only) + map/concept children
-  const [imagesRes, mapRes] = await Promise.allSettled([
+  const hierarchyProfile = currentResourceProfile === 'concept' || currentResourceProfile === 'spatial'
+    ? currentResourceProfile
+    : null;
+  const currentHierarchyNode = {
+    urn: id,
+    label,
+    type: extractShortId(typeUrn),
+    geojson: selfGjStr,
+  };
+
+  // Step 2: parallel fetches — images (spatial only) + map/concept children + hierarchy
+  const [imagesRes, mapRes, hierarchyRes] = await Promise.allSettled([
     isSpatial
       ? fetch(`${API_BASE}/images/${encodeURIComponent(shortId)}`)
           .then(r => r.ok ? r.json() : []).catch(() => [])
@@ -1470,6 +1793,9 @@ async function loadEntity(rawId) {
       ? fetch(`${API_BASE}/spatial-children/${encodeURIComponent(shortId)}`)
           .then(r => r.ok ? r.json() : []).catch(() => [])
       : fetchDepictedWhereWithSpaceFallback(shortId),
+    hierarchyProfile
+      ? buildHierarchyState(hierarchyProfile, currentHierarchyNode)
+      : Promise.resolve(null),
   ]);
 
   let childItems = [];
@@ -1494,6 +1820,9 @@ async function loadEntity(rawId) {
       getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES)
     );
   }
+
+  hierarchyState = hierarchyRes.status === 'fulfilled' ? hierarchyRes.value : null;
+  rerenderHierarchy();
 
   // Build the self-boundary item for spatial entities
   let selfItem = null;

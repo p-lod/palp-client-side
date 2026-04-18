@@ -367,6 +367,133 @@ body {
   will-change: transform;
 }
 
+/* ── Hierarchy panel ────────────────────────────────────────── */
+
+.hierarchy-browser {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.hierarchy-section {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.hierarchy-section-label-inline {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8c857a;
+}
+
+.hierarchy-ancestor-list,
+.hierarchy-tree,
+.hierarchy-children {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hierarchy-ancestor-list {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.hierarchy-item + .hierarchy-item {
+  margin-top: 0.28rem;
+}
+
+.hierarchy-row {
+  display: grid;
+  grid-template-columns: 1.4rem minmax(0, 1fr);
+  align-items: start;
+  gap: 0.25rem;
+}
+
+.hierarchy-toggle {
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  border: 1px solid #d9d2c8;
+  border-radius: 999px;
+  background: #f6f1ea;
+  color: #7a6754;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.hierarchy-toggle:hover {
+  background: #efe6db;
+  border-color: #cdbba6;
+}
+
+.hierarchy-toggle-loading,
+.hierarchy-toggle-spacer {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #b1a89a;
+  cursor: default;
+}
+
+.hierarchy-node {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  width: 100%;
+  min-width: 0;
+  padding: 0.42rem 0.55rem;
+  border: 1px solid #e4ddd4;
+  border-radius: 8px;
+  background: #fbf8f3;
+  color: #2f2a26;
+  text-align: left;
+}
+
+button.hierarchy-node {
+  cursor: pointer;
+}
+
+button.hierarchy-node:hover,
+button.hierarchy-node:focus-visible {
+  border-color: #d0b185;
+  background: #fff9ef;
+  outline: none;
+}
+
+.hierarchy-node-ancestor {
+  background: #f6f2ed;
+}
+
+.hierarchy-node-current {
+  background: #efe7da;
+  border-color: #ccb08f;
+}
+
+.hierarchy-node-label {
+  min-width: 0;
+  font-size: 0.88rem;
+  line-height: 1.3;
+}
+
+.hierarchy-node-type {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8b7a68;
+}
+
+.hierarchy-children {
+  margin-left: 0.7rem;
+  padding-left: 0.7rem;
+  border-left: 1px solid #e6ddd2;
+  margin-top: 0.35rem;
+}
+
 /* ── States ─────────────────────────────────────────────────── */
 
 .placeholder {
