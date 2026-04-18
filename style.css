@@ -453,6 +453,19 @@ body {
   text-align: left;
 }
 
+.hierarchy-node-main {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.hierarchy-node-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+}
+
 button.hierarchy-node {
   cursor: pointer;
 }
@@ -485,6 +498,28 @@ button.hierarchy-node:focus-visible {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: #8b7a68;
+}
+
+.hierarchy-go {
+  width: 1.45rem;
+  height: 1.45rem;
+  padding: 0;
+  border: 1px solid #d8c8b4;
+  border-radius: 6px;
+  background: #fffdf8;
+  color: #7a5b3b;
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.hierarchy-go:hover,
+.hierarchy-go:focus-visible {
+  border-color: #be9a70;
+  background: #fff4e4;
+  color: #5b3d1e;
+  outline: none;
 }
 
 .hierarchy-children {

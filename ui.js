@@ -1139,7 +1139,10 @@ function getHierarchySlot() {
 function renderHierarchyLine(node, kind = 'ancestor') {
   const typeHtml = node.type ? `<span class="hierarchy-node-type">${escHtml(node.type)}</span>` : '';
   return `<div class="hierarchy-node hierarchy-node-${kind}">` +
-         `<span class="hierarchy-node-label">${escHtml(node.label)}</span>${typeHtml}</div>`;
+         `<span class="hierarchy-node-main">` +
+         `<span class="hierarchy-node-label">${escHtml(node.label)}</span>${typeHtml}</span>` +
+         `<button type="button" class="hierarchy-go" data-hierarchy-go="${escAttr(node.urn)}" aria-label="Go to ${escAttr(extractShortId(node.urn))}" title="Go to ${escAttr(extractShortId(node.urn))}">↗</button>` +
+         `</div>`;
 }
 
 function renderHierarchyBranch(node, state) {
@@ -1163,7 +1166,11 @@ function renderHierarchyBranch(node, state) {
   return `<li class="hierarchy-item">` +
          `<div class="hierarchy-row">${toggleHtml}` +
          `<button type="button" class="hierarchy-node hierarchy-node-child" data-hierarchy-preview="${escAttr(node.urn)}">` +
-         `<span class="hierarchy-node-label">${escHtml(node.label)}</span>${typeHtml}</button></div>${nestedHtml}</li>`;
+      `<span class="hierarchy-node-main">` +
+      `<span class="hierarchy-node-label">${escHtml(node.label)}</span>${typeHtml}</span>` +
+      `<span class="hierarchy-node-actions">` +
+      `<button type="button" class="hierarchy-go" data-hierarchy-go="${escAttr(node.urn)}" aria-label="Go to ${escAttr(extractShortId(node.urn))}" title="Go to ${escAttr(extractShortId(node.urn))}">↗</button>` +
+      `</span></button></div>${nestedHtml}</li>`;
 }
 
 function renderHierarchyState(slotEl, state) {
@@ -1302,6 +1309,15 @@ function wireHierarchyInteractions(slotEl) {
     });
     button.addEventListener('focus', () => {
       void previewHierarchyNode(button.dataset.hierarchyPreview);
+    });
+  });
+
+  slotEl.querySelectorAll('[data-hierarchy-go]').forEach(button => {
+    button.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      const urn = button.dataset.hierarchyGo;
+      if (urn) navigate(extractShortId(urn));
     });
   });
 }
