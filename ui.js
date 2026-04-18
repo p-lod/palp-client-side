@@ -99,6 +99,8 @@ let currentResourceProfile = 'default';
 
 const PANE_EVENT_ENTITY_HIGHLIGHT = 'entity:highlight';
 const PANE_EVENT_ENTITY_CLEAR     = 'entity:clear';
+const UI_EVENT_IMAGE_MODAL_OPEN   = 'image-modal:open';
+const UI_EVENT_IMAGE_MODAL_CLOSE  = 'image-modal:close';
 
 const paneEvents = (() => {
   const handlers = new Map();
@@ -619,6 +621,20 @@ let hierarchyState = null;
 let hierarchyPreviewLayer = null;
 let hierarchyPreviewUrn = null;
 let hierarchyPreviewRequestToken = 0;
+const imageModalState = {
+  isOpen: false,
+  imageUrl: '',
+  imageUrn: '',
+  contextUrn: '',
+  triggerEl: null,
+  overlayEl: null,
+  dialogEl: null,
+  titleEl: null,
+  imgEl: null,
+  infoEl: null,
+  closeBtnEl: null,
+  eventsBound: false,
+};
 
 const HIGHLIGHT_STYLE = Object.freeze({
   color: '#ff9900',
@@ -665,6 +681,159 @@ function clearImageAssociations() {
   imageAssociationBuildToken += 1;
   firstImageElByEntityUrn.clear();
   clearActiveMapHoverImage();
+}
+
+function ensureImageModalInitialized() {
+  if (imageModalState.overlayEl) return;
+
+  const overlayEl = document.createElement('div');
+  overlayEl.id = 'image-modal-overlay';
+  overlayEl.className = 'image-modal-overlay';
+  overlayEl.hidden = true;
+  overlayEl.innerHTML =
+    '<div class="image-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="image-modal-title">' +
+      '<div class="image-modal-header">' +
+        '<h2 id="image-modal-title" class="image-modal-title">Image</h2>' +
+        '<button type="button" class="image-modal-close" data-image-modal-close="button" aria-label="Close image modal">✕</button>' +
+      '</div>' +
+      '<div class="image-modal-content">' +
+        '<div class="image-modal-media">' +
+          '<img class="image-modal-img" alt="">' +
+        '</div>' +
+        '<aside class="image-modal-info" aria-live="polite"></aside>' +
+      '</div>' +
+    '</div>';
+
+  document.body.appendChild(overlayEl);
+
+  imageModalState.overlayEl = overlayEl;
+  imageModalState.dialogEl = overlayEl.querySelector('.image-modal-dialog');
+  imageModalState.titleEl = overlayEl.querySelector('.image-modal-title');
+  imageModalState.imgEl = overlayEl.querySelector('.image-modal-img');
+  imageModalState.infoEl = overlayEl.querySelector('.image-modal-info');
+  imageModalState.closeBtnEl = overlayEl.querySelector('.image-modal-close');
+}
+
+function renderImageModalContent() {
+  if (!imageModalState.titleEl || !imageModalState.imgEl || !imageModalState.infoEl) return;
+
+  const imageShort = imageModalState.imageUrn ? extractShortId(imageModalState.imageUrn) : 'image';
+  imageModalState.titleEl.textContent = imageShort;
+  imageModalState.imgEl.src = imageModalState.imageUrl;
+  imageModalState.imgEl.alt = imageShort;
+
+  const imageUrnHtml = imageModalState.imageUrn
+    ? `<div class="image-modal-info-row"><span class="image-modal-info-key">Image</span><span class="image-modal-info-value">${escHtml(imageModalState.imageUrn)}</span></div>`
+    : '';
+  const contextUrnHtml = imageModalState.contextUrn
+    ? `<div class="image-modal-info-row"><span class="image-modal-info-key">Context</span><span class="image-modal-info-value">${escHtml(imageModalState.contextUrn)}</span></div>`
+    : '';
+
+  imageModalState.infoEl.innerHTML =
+    '<p class="image-modal-info-title">Details</p>' +
+    imageUrnHtml +
+    contextUrnHtml +
+    '<p class="image-modal-info-note">Modal scaffolding is ready for richer fields from gallery payload and optional runtime /id lookups.</p>';
+}
+
+function setImageModalVisibility(isOpen) {
+  ensureImageModalInitialized();
+
+  imageModalState.isOpen = !!isOpen;
+  imageModalState.overlayEl.hidden = !isOpen;
+  imageModalState.overlayEl.classList.toggle('is-open', !!isOpen);
+  imageModalState.overlayEl.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
+  document.body.classList.toggle('has-image-modal', !!isOpen);
+}
+
+function openImageModal(payload = {}) {
+  const imageUrl = String(payload.imageUrl || '').trim();
+  if (!imageUrl) return;
+
+  ensureImageModalInitialized();
+
+  imageModalState.imageUrl = imageUrl;
+  imageModalState.imageUrn = String(payload.imageUrn || '');
+  imageModalState.contextUrn = String(payload.contextUrn || '');
+  imageModalState.triggerEl = payload.triggerEl || document.activeElement || null;
+
+  renderImageModalContent();
+
+  setImageModalVisibility(true);
+  imageModalState.closeBtnEl.focus();
+}
+
+function closeImageModal() {
+  if (!imageModalState.overlayEl) return;
+  const overlayIsVisible = !imageModalState.overlayEl.hidden || imageModalState.overlayEl.classList.contains('is-open');
+  if (!imageModalState.isOpen && !overlayIsVisible) return;
+
+  setImageModalVisibility(false);
+
+  if (imageModalState.imgEl) imageModalState.imgEl.removeAttribute('src');
+
+  const focusTarget = imageModalState.triggerEl;
+  imageModalState.imageUrl = '';
+  imageModalState.imageUrn = '';
+  imageModalState.contextUrn = '';
+  imageModalState.triggerEl = null;
+
+  if (focusTarget && typeof focusTarget.focus === 'function' && document.contains(focusTarget)) {
+    focusTarget.focus();
+  }
+}
+
+function initImageModalEvents() {
+  ensureImageModalInitialized();
+  setImageModalVisibility(false);
+  if (imageModalState.eventsBound) return;
+  imageModalState.eventsBound = true;
+
+  paneEvents.on(UI_EVENT_IMAGE_MODAL_OPEN, payload => {
+    openImageModal(payload || {});
+  });
+
+  paneEvents.on(UI_EVENT_IMAGE_MODAL_CLOSE, () => {
+    closeImageModal();
+  });
+
+  imageModalState.overlayEl.addEventListener('click', e => {
+    if (e.target === imageModalState.overlayEl || e.target.closest('[data-image-modal-close]')) {
+      paneEvents.emit(UI_EVENT_IMAGE_MODAL_CLOSE);
+    }
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && imageModalState.isOpen) {
+      e.preventDefault();
+      paneEvents.emit(UI_EVENT_IMAGE_MODAL_CLOSE);
+    }
+  });
+}
+
+function wireImageModalOpenEvents(containerEl) {
+  if (!containerEl) return;
+
+  containerEl.querySelectorAll('[data-image-url]').forEach(el => {
+    el.addEventListener('click', e => {
+      if (e.defaultPrevented) return;
+      if (e.button !== 0) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+
+      const imageUrl = el.dataset.imageUrl;
+      if (!imageUrl) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      paneEvents.emit(UI_EVENT_IMAGE_MODAL_OPEN, {
+        imageUrl,
+        imageUrn: el.dataset.imageUrn || el.dataset.entityUrn || '',
+        contextUrn: el.dataset.featureUrn || el.dataset.entityUrn || '',
+        triggerEl: el,
+      });
+    });
+  });
 }
 
 function registerFirstImageAssociation(entityUrn, imageEl) {
@@ -1424,7 +1593,7 @@ function renderImages(images, el) {
       const featureUrn = featureByUrn.get(urn) || '';
       const featureAttr = featureUrn ? ` data-feature-urn="${escAttr(featureUrn)}"` : '';
       if (url) {
-        html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer"${featureAttr}>` +
+        html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer" data-image-url="${escAttr(url)}" data-image-urn="${escAttr(urn)}"${featureAttr}>` +
                 `<img src="${escAttr(url)}" alt="${escAttr(short)}" title="${escAttr(short)}" loading="lazy">` +
                 `</a>`;
       } else {
@@ -1434,6 +1603,7 @@ function renderImages(images, el) {
     html += '</div>';
     el.innerHTML = html;
     wireSpatialImageHoverEvents(el);
+    wireImageModalOpenEvents(el);
   });
 }
 
@@ -1541,7 +1711,7 @@ function renderConceptImages(depictedItems, el) {
     const url       = item.l_img_url || null;
     const short     = extractShortId(entityUrn);
     if (url) {
-      html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer" data-entity-urn="${escAttr(entityUrn)}">` +
+      html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer" data-image-url="${escAttr(url)}" data-image-urn="${escAttr(entityUrn)}" data-entity-urn="${escAttr(entityUrn)}">` +
               `<img src="${escAttr(url)}" alt="${escAttr(short)}" title="${escAttr(short)}" loading="lazy">` +
               `</a>`;
     } else if (entityUrn) {
@@ -1551,6 +1721,7 @@ function renderConceptImages(depictedItems, el) {
   html += '</div>';
   el.innerHTML = html;
   wireImageHoverEvents(el);
+  wireImageModalOpenEvents(el);
 }
 
 // ── Panel: Map ────────────────────────────────────────────────────────────────
@@ -1748,6 +1919,8 @@ function navigate(id) {
 }
 
 async function loadEntity(rawId) {
+  paneEvents.emit(UI_EVENT_IMAGE_MODAL_CLOSE);
+
   const id      = normalizeId(rawId);
   const shortId = extractShortId(id);
 
@@ -1887,6 +2060,7 @@ window.addEventListener('hashchange', handleRouteChange);
 document.addEventListener('DOMContentLoaded', () => {
   syncHighlightCssVars();
   initModifierKeyTracking();
+  initImageModalEvents();
 
   const initialHashState = parseHashState();
   currentPaneLayoutOverride = initialHashState.layoutOverride;
