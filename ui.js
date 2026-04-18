@@ -881,17 +881,14 @@ function runFarZoomAttentionPulse(urn, entry) {
   cancelAttentionPulseForUrn(urn);
 
   entry.layer.setStyle({ ...HIGHLIGHT_STYLE, color: '#ffe066', weight: 12, fillOpacity: 0.85 });
-  entry.layer.bringToFront();
 
   const timeoutId = setTimeout(() => {
     if (currentHoveredEntityUrn !== urn) return;
     entry.layer.setStyle({ ...HIGHLIGHT_STYLE, color: '#ffb300', weight: 8, fillOpacity: 0.68 });
-    entry.layer.bringToFront();
 
     const settleTimeoutId = setTimeout(() => {
       if (currentHoveredEntityUrn !== urn) return;
       entry.layer.setStyle(HIGHLIGHT_STYLE);
-      entry.layer.bringToFront();
       attentionPulseTimeoutByUrn.delete(urn);
     }, 140);
 
@@ -1103,6 +1100,7 @@ async function ensureAncestorOutlineLayer(ancestorUrn) {
 
       const layer = L.geoJSON(parsed, {
         style: { ...ANCESTOR_OUTLINE_STYLE, className: 'plod-ancestor-outline' },
+        interactive: false,
       });
       ancestorOutlineLayerCache.set(ancestorUrn, layer);
       return layer;
@@ -1145,12 +1143,8 @@ async function showAncestorOutlineForHoveredEntity(entityUrn) {
   }
 
   if (!layerGroup.hasLayer(layer)) layer.addTo(layerGroup);
-  // Keep ancestor outline above the general map geometry...
+  // Keep ancestor outline above the general map geometry.
   layer.bringToFront();
-
-  // ...but keep the currently hovered spatial entity above that outline.
-  const entityEntry = layersByEntityUrn.get(entityUrn);
-  if (entityEntry) entityEntry.layer.bringToFront();
 
   activeAncestorOutlineUrn = ancestorUrn;
 }
@@ -1420,6 +1414,7 @@ async function previewHierarchyNode(urn) {
 
   hierarchyPreviewLayer = L.geoJSON(parsed, {
     style: { ...HIERARCHY_PREVIEW_STYLE, className: 'plod-hierarchy-preview' },
+    interactive: false,
   }).addTo(layerGroup);
   hierarchyPreviewLayer.bringToFront();
   hierarchyPreviewUrn = urn;
@@ -1646,6 +1641,8 @@ async function resolveFeatureToLayer(featureUrn) {
     if (!r.ok) { spatialHoverCache.set(featureUrn, null); return null; }
     const ancestors = await r.json();
     if (Array.isArray(ancestors)) {
+      // This resolver maps image features to a highlight target only.
+      // It must not be coupled to map layer stacking behavior.
       for (const a of ancestors) {
         if (a.urn && layersByEntityUrn.has(a.urn)) {
           spatialHoverCache.set(featureUrn, a.urn);
@@ -1787,12 +1784,13 @@ function isLayerOutOfView(layer) {
 }
 
 function initMapHoverListeners() {
+  // Invariant: base spatial layer z-order is immutable after render.
+  // Hover/highlight behavior must be style-driven to preserve hit testing.
   paneEvents.on(PANE_EVENT_ENTITY_HIGHLIGHT, ({ urn, shouldPan = false, source = null }) => {
     const entry = layersByEntityUrn.get(urn);
     if (!entry) return;
 
     currentHoveredEntityUrn = urn;
-    entry.layer.bringToFront();
 
     if (shouldRunFarZoomAttentionPulse(source)) {
       runFarZoomAttentionPulse(urn, entry);
