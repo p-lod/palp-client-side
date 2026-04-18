@@ -621,12 +621,14 @@ let hierarchyState = null;
 let hierarchyPreviewLayer = null;
 let hierarchyPreviewUrn = null;
 let hierarchyPreviewRequestToken = 0;
+let suppressMapToImageHighlight = false;
 const imageModalState = {
   isOpen: false,
   imageUrl: '',
   imageUrn: '',
   contextUrn: '',
   triggerEl: null,
+  suppressFocusHighlightEl: null,
   overlayEl: null,
   dialogEl: null,
   titleEl: null,
@@ -671,6 +673,25 @@ function setImageHoverState(el, isActive) {
   el.classList.toggle(IMAGE_HOVER_CLASS, isActive);
 }
 
+function beginImageTileHighlight(el) {
+  if (!el) return;
+  setImageHoverState(el, true);
+}
+
+function endImageTileHighlight(el) {
+  if (!el) return;
+  setImageHoverState(el, false);
+  if (activeMapHoverImageEl === el) activeMapHoverImageEl = null;
+}
+
+function shouldSuppressImageFocusHighlight(el) {
+  if (!el) return false;
+  if (imageModalState.suppressFocusHighlightEl !== el) return false;
+  imageModalState.suppressFocusHighlightEl = null;
+  endImageTileHighlight(el);
+  return true;
+}
+
 function clearActiveMapHoverImage() {
   if (!activeMapHoverImageEl) return;
   setImageHoverState(activeMapHoverImageEl, false);
@@ -681,6 +702,22 @@ function clearImageAssociations() {
   imageAssociationBuildToken += 1;
   firstImageElByEntityUrn.clear();
   clearActiveMapHoverImage();
+}
+
+function suppressMapToImageHighlightUntilPointerMove() {
+  suppressMapToImageHighlight = true;
+}
+
+function bindMapToImageResyncOnPointerMove() {
+  if (!mapContainerEl || mapContainerEl.__plodMapToImageResyncBound) return;
+  mapContainerEl.__plodMapToImageResyncBound = true;
+
+  const clearSuppression = () => {
+    suppressMapToImageHighlight = false;
+  };
+
+  mapContainerEl.addEventListener('pointermove', clearSuppression, { passive: true });
+  mapContainerEl.addEventListener('pointerdown', clearSuppression, { passive: true });
 }
 
 function ensureImageModalInitialized() {
@@ -746,6 +783,24 @@ function setImageModalVisibility(isOpen) {
   document.body.classList.toggle('has-image-modal', !!isOpen);
 }
 
+function clearHighlightForModalTrigger(triggerEl) {
+  if (!triggerEl) return;
+
+  endImageTileHighlight(triggerEl);
+
+  const entityUrn = triggerEl.dataset.entityUrn || '';
+  if (entityUrn) {
+    paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn: entityUrn, source: 'image' });
+  }
+
+  const featureUrn = triggerEl.dataset.featureUrn || '';
+  if (featureUrn) {
+    void resolveFeatureToLayer(featureUrn).then(layerUrn => {
+      if (layerUrn) paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn: layerUrn, source: 'image' });
+    });
+  }
+}
+
 function openImageModal(payload = {}) {
   const imageUrl = String(payload.imageUrl || '').trim();
   if (!imageUrl) return;
@@ -756,6 +811,9 @@ function openImageModal(payload = {}) {
   imageModalState.imageUrn = String(payload.imageUrn || '');
   imageModalState.contextUrn = String(payload.contextUrn || '');
   imageModalState.triggerEl = payload.triggerEl || document.activeElement || null;
+
+  clearHighlightForModalTrigger(imageModalState.triggerEl);
+  suppressMapToImageHighlightUntilPointerMove();
 
   renderImageModalContent();
 
@@ -778,8 +836,13 @@ function closeImageModal() {
   imageModalState.contextUrn = '';
   imageModalState.triggerEl = null;
 
+  suppressMapToImageHighlightUntilPointerMove();
+
   if (focusTarget && typeof focusTarget.focus === 'function' && document.contains(focusTarget)) {
+    imageModalState.suppressFocusHighlightEl = focusTarget;
     focusTarget.focus();
+  } else {
+    imageModalState.suppressFocusHighlightEl = null;
   }
 }
 
@@ -947,6 +1010,7 @@ function ensureMapContainerInSlot(slotEl) {
 function ensureMapInitialized(slotEl) {
   const container = ensureMapContainerInSlot(slotEl);
   if (!container) return;
+  bindMapToImageResyncOnPointerMove();
 
   if (!leafletMap) {
     leafletMap = L.map(container, { zoomControl: true });
@@ -1608,19 +1672,20 @@ function wireImageHoverEvents(containerEl) {
     if (urn) registerFirstImageAssociation(urn, el);
 
     el.addEventListener('mouseenter', e => {
-      setImageHoverState(el, true);
+      beginImageTileHighlight(el);
       paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: shouldPanFromEvent(e), source: 'image' });
     });
     el.addEventListener('mouseleave', () => {
-      setImageHoverState(el, false);
+      endImageTileHighlight(el);
       paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn });
     });
     el.addEventListener('focus', () => {
-      setImageHoverState(el, true);
+      if (shouldSuppressImageFocusHighlight(el)) return;
+      beginImageTileHighlight(el);
       paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: isPanModifierDown(), source: 'image' });
     });
     el.addEventListener('blur', () => {
-      setImageHoverState(el, false);
+      endImageTileHighlight(el);
       paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn });
     });
   });
@@ -1671,23 +1736,24 @@ function wireSpatialImageHoverEvents(containerEl) {
 
     el.addEventListener('mouseenter', async e => {
       const shouldPan = shouldPanFromEvent(e);
-      setImageHoverState(el, true);
+      beginImageTileHighlight(el);
       resolvedUrn = await resolveFeatureToLayer(featureUrn);
       if (resolvedUrn && el.matches(':hover')) {
         paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: resolvedUrn, shouldPan, source: 'image' });
       }
     });
     el.addEventListener('mouseleave', () => {
-      setImageHoverState(el, false);
+      endImageTileHighlight(el);
       if (resolvedUrn) paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn: resolvedUrn });
     });
     el.addEventListener('focus', async () => {
-      setImageHoverState(el, true);
+      if (shouldSuppressImageFocusHighlight(el)) return;
+      beginImageTileHighlight(el);
       resolvedUrn = await resolveFeatureToLayer(featureUrn);
       if (resolvedUrn) paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: resolvedUrn, shouldPan: isPanModifierDown(), source: 'image' });
     });
     el.addEventListener('blur', () => {
-      setImageHoverState(el, false);
+      endImageTileHighlight(el);
       if (resolvedUrn) paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn: resolvedUrn });
     });
   });
@@ -1825,6 +1891,7 @@ function initMapHoverListeners() {
 
   paneEvents.on(PANE_EVENT_ENTITY_HIGHLIGHT, ({ urn, source }) => {
     if (source !== 'map') return;
+    if (imageModalState.isOpen || suppressMapToImageHighlight) return;
     highlightAndScrollToFirstAssociatedImage(urn);
   });
 
