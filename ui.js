@@ -894,7 +894,7 @@ function emitImageModalNavigationHighlightForTile(tileEl) {
     }
 
     imageModalState.navHighlightUrn = urn || '';
-    if (urn) paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, source: 'image' });
+    if (urn) paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: true, source: 'image' });
   };
 
   const entityUrn = String(tileEl.dataset.entityUrn || '');
