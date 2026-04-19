@@ -381,7 +381,7 @@ body.has-image-modal {
   align-items: center;
   justify-content: center;
   padding: clamp(12px, 3vw, 34px);
-  background: color-mix(in srgb, #0f0f0f 72%, transparent 28%);
+  background: transparent;
   opacity: 0;
   transition: opacity 140ms ease;
   pointer-events: none;
@@ -389,7 +389,6 @@ body.has-image-modal {
 
 .image-modal-overlay.is-open {
   opacity: 1;
-  pointer-events: auto;
 }
 
 .image-modal-overlay[hidden] {
@@ -409,6 +408,7 @@ body.has-image-modal {
   color: #f3f3f3;
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.45);
   will-change: transform;
+  pointer-events: auto;
 }
 
 .image-modal-header {
@@ -462,6 +462,13 @@ body.has-image-modal {
   font-weight: 600;
 }
 
+.image-modal-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.image-modal-nav,
 .image-modal-close {
   border: 1px solid #5f5f5f;
   border-radius: 6px;
@@ -474,11 +481,18 @@ body.has-image-modal {
   line-height: 1;
 }
 
+.image-modal-nav:hover,
+.image-modal-nav:focus-visible,
 .image-modal-close:hover,
 .image-modal-close:focus-visible {
   background: #353535;
   border-color: #b08a58;
   outline: none;
+}
+
+.image-modal-nav:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
 }
 
 .image-modal-content {

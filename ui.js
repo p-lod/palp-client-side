@@ -637,7 +637,15 @@ const imageModalState = {
   imgEl: null,
   infoEl: null,
   closeBtnEl: null,
+  prevBtnEl: null,
+  nextBtnEl: null,
   resizeHandleEl: null,
+  ignoreOpenClickUntil: 0,
+  imageSequence: [],
+  activeSequenceIndex: -1,
+  sequenceVersion: 0,
+  navHighlightUrn: '',
+  navHighlightToken: 0,
   eventsBound: false,
 };
 
@@ -741,6 +749,265 @@ function clearImageAssociations() {
   imageAssociationBuildToken += 1;
   firstImageElByEntityUrn.clear();
   clearActiveMapHoverImage();
+  invalidateImageModalSequence();
+}
+
+function normalizeImageModalPayload(payload = {}, { requireImageUrl = true } = {}) {
+  const imageUrl = String(payload.imageUrl || '').trim();
+  if (requireImageUrl && !imageUrl) return null;
+
+  const triggerEl = payload.triggerEl && document.contains(payload.triggerEl)
+    ? payload.triggerEl
+    : null;
+
+  return {
+    imageUrl,
+    imageUrn: String(payload.imageUrn || '').trim(),
+    contextUrn: String(payload.contextUrn || '').trim(),
+    triggerEl,
+  };
+}
+
+function getImageModalTileFromElement(el) {
+  if (!el || !document.contains(el)) return null;
+  return el.closest('[data-image-url], .image-urn-fallback');
+}
+
+function collectImageModalSequence() {
+  const imageSlot = getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES);
+  if (!imageSlot) return [];
+
+  return Array.from(
+    imageSlot.querySelectorAll('.image-grid [data-image-url], .image-grid .image-urn-fallback')
+  ).filter(el => document.contains(el));
+}
+
+function getImageModalPayloadFromSequenceTile(tileEl) {
+  if (!tileEl || !document.contains(tileEl)) return null;
+
+  return normalizeImageModalPayload({
+    imageUrl: tileEl.dataset.imageUrl || '',
+    imageUrn: tileEl.dataset.imageUrn || tileEl.dataset.entityUrn || '',
+    contextUrn: tileEl.dataset.featureUrn || tileEl.dataset.entityUrn || '',
+    triggerEl: tileEl,
+  }, { requireImageUrl: false });
+}
+
+function resolveImageModalSequenceIndex(sequence, payload) {
+  if (!Array.isArray(sequence) || !sequence.length || !payload) return -1;
+
+  const triggerTile = getImageModalTileFromElement(payload.triggerEl);
+  if (triggerTile) {
+    const triggerIdx = sequence.indexOf(triggerTile);
+    if (triggerIdx >= 0) return triggerIdx;
+  }
+
+  if (payload.imageUrn) {
+    const byUrn = sequence.findIndex(el => String(el.dataset.imageUrn || el.dataset.entityUrn || '') === payload.imageUrn);
+    if (byUrn >= 0) return byUrn;
+  }
+
+  if (payload.imageUrl) {
+    const byUrl = sequence.findIndex(el => String(el.dataset.imageUrl || '') === payload.imageUrl);
+    if (byUrl >= 0) return byUrl;
+  }
+
+  return -1;
+}
+
+function updateImageModalNavControls() {
+  const hasSequence = imageModalState.imageSequence.length > 1;
+
+  if (imageModalState.prevBtnEl) {
+    imageModalState.prevBtnEl.disabled = !hasSequence;
+    imageModalState.prevBtnEl.setAttribute('aria-disabled', hasSequence ? 'false' : 'true');
+  }
+
+  if (imageModalState.nextBtnEl) {
+    imageModalState.nextBtnEl.disabled = !hasSequence;
+    imageModalState.nextBtnEl.setAttribute('aria-disabled', hasSequence ? 'false' : 'true');
+  }
+}
+
+function invalidateImageModalSequence() {
+  imageModalState.sequenceVersion += 1;
+  imageModalState.imageSequence = [];
+  imageModalState.activeSequenceIndex = -1;
+  updateImageModalNavControls();
+}
+
+function rebuildImageModalSequence(activePayload = null) {
+  imageModalState.sequenceVersion += 1;
+  imageModalState.imageSequence = collectImageModalSequence();
+  imageModalState.activeSequenceIndex = resolveImageModalSequenceIndex(imageModalState.imageSequence, activePayload);
+  updateImageModalNavControls();
+}
+
+function syncImageModalSequenceToPayload(payload) {
+  if (!payload) return;
+
+  if (!imageModalState.imageSequence.length) {
+    rebuildImageModalSequence(payload);
+    return;
+  }
+
+  const idx = resolveImageModalSequenceIndex(imageModalState.imageSequence, payload);
+  if (idx >= 0) imageModalState.activeSequenceIndex = idx;
+  updateImageModalNavControls();
+}
+
+function normalizeImageModalSequenceIndex(rawIndex, len) {
+  if (!len) return -1;
+  return ((rawIndex % len) + len) % len;
+}
+
+function syncImageModalSequenceTileHighlight(tileEl) {
+  if (!tileEl || !document.contains(tileEl)) return;
+
+  clearActiveMapHoverImage();
+  beginImageTileHighlight(tileEl);
+  activeMapHoverImageEl = tileEl;
+  tileEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+}
+
+function clearImageModalNavigationMapHighlight() {
+  imageModalState.navHighlightToken += 1;
+
+  if (!imageModalState.navHighlightUrn) return;
+  paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn: imageModalState.navHighlightUrn, source: 'image' });
+  imageModalState.navHighlightUrn = '';
+}
+
+function emitImageModalNavigationHighlightForTile(tileEl) {
+  if (!tileEl) {
+    clearImageModalNavigationMapHighlight();
+    return;
+  }
+
+  const token = ++imageModalState.navHighlightToken;
+
+  const setHighlightUrn = urn => {
+    if (token !== imageModalState.navHighlightToken) return;
+
+    if (imageModalState.navHighlightUrn && imageModalState.navHighlightUrn !== urn) {
+      paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn: imageModalState.navHighlightUrn, source: 'image' });
+    }
+
+    imageModalState.navHighlightUrn = urn || '';
+    if (urn) paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, source: 'image' });
+  };
+
+  const entityUrn = String(tileEl.dataset.entityUrn || '');
+  if (entityUrn) {
+    setHighlightUrn(entityUrn);
+    return;
+  }
+
+  const featureUrn = String(tileEl.dataset.featureUrn || '');
+  if (!featureUrn) {
+    setHighlightUrn('');
+    return;
+  }
+
+  void resolveFeatureToLayer(featureUrn).then(layerUrn => {
+    setHighlightUrn(layerUrn || '');
+  });
+}
+
+function stepImageModalSequence(direction) {
+  if (!canSyncOpenImageModal()) return false;
+
+  if (!imageModalState.imageSequence.length) {
+    rebuildImageModalSequence(imageModalState);
+  }
+
+  const sequence = imageModalState.imageSequence;
+  const len = sequence.length;
+  if (!len) return false;
+
+  const startIndex = imageModalState.activeSequenceIndex >= 0
+    ? imageModalState.activeSequenceIndex
+    : 0;
+  const nextIndex = normalizeImageModalSequenceIndex(startIndex + direction, len);
+  const nextTile = sequence[nextIndex];
+  if (!nextTile || !document.contains(nextTile)) {
+    rebuildImageModalSequence(imageModalState);
+    return false;
+  }
+
+  const payload = getImageModalPayloadFromSequenceTile(nextTile);
+  if (!payload) return false;
+
+  syncOpenImageModal(payload, { requireImageUrl: false, updateTriggerEl: true });
+  imageModalState.activeSequenceIndex = nextIndex;
+  updateImageModalNavControls();
+  syncImageModalSequenceTileHighlight(nextTile);
+  emitImageModalNavigationHighlightForTile(nextTile);
+  return true;
+}
+
+function hasSameImageModalPayload(payload) {
+  return !!payload
+    && imageModalState.imageUrl === payload.imageUrl
+    && imageModalState.imageUrn === payload.imageUrn
+    && imageModalState.contextUrn === payload.contextUrn;
+}
+
+function applyImageModalPayload(payload, { updateTriggerEl = false } = {}) {
+  imageModalState.imageUrl = payload.imageUrl;
+  imageModalState.imageUrn = payload.imageUrn;
+  imageModalState.contextUrn = payload.contextUrn;
+  if (updateTriggerEl) imageModalState.triggerEl = payload.triggerEl || null;
+}
+
+function canSyncOpenImageModal() {
+  return imageModalState.isOpen
+    && !imageModalDragState.isDragging
+    && !imageModalResizeState.isResizing;
+}
+
+function getImageModalPayloadFromElement(el, contextUrn = '') {
+  if (!el || !document.contains(el)) return null;
+  const imageUrl = String(el.dataset.imageUrl || '').trim();
+  if (!imageUrl) return null;
+
+  return normalizeImageModalPayload({
+    imageUrl,
+    imageUrn: el.dataset.imageUrn || el.dataset.entityUrn || '',
+    contextUrn: contextUrn || el.dataset.featureUrn || el.dataset.entityUrn || '',
+    triggerEl: el,
+  });
+}
+
+function syncOpenImageModal(payload = {}, { requireImageUrl = true, updateTriggerEl = false } = {}) {
+  if (!canSyncOpenImageModal()) return false;
+
+  const normalized = normalizeImageModalPayload(payload, { requireImageUrl });
+  if (!normalized) return false;
+
+  if (hasSameImageModalPayload(normalized)) {
+    if (updateTriggerEl) imageModalState.triggerEl = normalized.triggerEl || imageModalState.triggerEl;
+    syncImageModalSequenceToPayload(normalized);
+    return false;
+  }
+
+  applyImageModalPayload(normalized, { updateTriggerEl });
+  renderImageModalContent();
+  syncImageModalSequenceToPayload(normalized);
+  return true;
+}
+
+function syncOpenImageModalFromElement(el, contextUrn = '') {
+  const payload = getImageModalPayloadFromElement(el, contextUrn);
+  if (!payload) return false;
+  return syncOpenImageModal(payload);
+}
+
+function syncOpenImageModalFromEntityUrn(entityUrn) {
+  if (!entityUrn) return false;
+  const imageEl = firstImageElByEntityUrn.get(entityUrn);
+  if (!imageEl) return false;
+  return syncOpenImageModalFromElement(imageEl, entityUrn);
 }
 
 function applyImageModalDragTransform() {
@@ -1097,7 +1364,11 @@ function ensureImageModalInitialized() {
     '<div class="image-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="image-modal-title">' +
       '<div class="image-modal-header">' +
         '<h2 id="image-modal-title" class="image-modal-title">Image</h2>' +
+        '<div class="image-modal-header-actions">' +
+          '<button type="button" class="image-modal-nav image-modal-nav-prev" data-image-modal-nav="prev" aria-label="Previous image" title="Previous image">←</button>' +
+          '<button type="button" class="image-modal-nav image-modal-nav-next" data-image-modal-nav="next" aria-label="Next image" title="Next image">→</button>' +
         '<button type="button" class="image-modal-close" data-image-modal-close="button" aria-label="Close image modal">✕</button>' +
+        '</div>' +
       '</div>' +
       '<div class="image-modal-content">' +
         '<div class="image-modal-media">' +
@@ -1116,6 +1387,8 @@ function ensureImageModalInitialized() {
   imageModalState.titleEl = overlayEl.querySelector('.image-modal-title');
   imageModalState.imgEl = overlayEl.querySelector('.image-modal-img');
   imageModalState.infoEl = overlayEl.querySelector('.image-modal-info');
+  imageModalState.prevBtnEl = overlayEl.querySelector('.image-modal-nav-prev');
+  imageModalState.nextBtnEl = overlayEl.querySelector('.image-modal-nav-next');
   imageModalState.closeBtnEl = overlayEl.querySelector('.image-modal-close');
   imageModalState.resizeHandleEl = overlayEl.querySelector('.image-modal-resize-handle');
 }
@@ -1125,7 +1398,11 @@ function renderImageModalContent() {
 
   const imageShort = imageModalState.imageUrn ? extractShortId(imageModalState.imageUrn) : 'image';
   imageModalState.titleEl.textContent = imageShort;
-  imageModalState.imgEl.src = imageModalState.imageUrl;
+  if (imageModalState.imageUrl) {
+    imageModalState.imgEl.src = imageModalState.imageUrl;
+  } else {
+    imageModalState.imgEl.removeAttribute('src');
+  }
   imageModalState.imgEl.alt = imageShort;
 
   const imageUrnHtml = imageModalState.imageUrn
@@ -1152,6 +1429,11 @@ function setImageModalVisibility(isOpen) {
   if (!isOpen) imageModalState.overlayEl.classList.remove('is-resizing');
   imageModalState.overlayEl.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
   document.body.classList.toggle('has-image-modal', !!isOpen);
+
+  if (!isOpen) {
+    invalidateImageModalSequence();
+    clearImageModalNavigationMapHighlight();
+  }
 }
 
 function clearHighlightForModalTrigger(triggerEl) {
@@ -1173,24 +1455,25 @@ function clearHighlightForModalTrigger(triggerEl) {
 }
 
 function openImageModal(payload = {}) {
-  const imageUrl = String(payload.imageUrl || '').trim();
-  if (!imageUrl) return;
+  const normalized = normalizeImageModalPayload({
+    ...payload,
+    triggerEl: payload.triggerEl || document.activeElement || null,
+  });
+  if (!normalized) return;
 
   ensureImageModalInitialized();
   ensureImageModalInitialGeometry();
 
-  imageModalState.imageUrl = imageUrl;
-  imageModalState.imageUrn = String(payload.imageUrn || '');
-  imageModalState.contextUrn = String(payload.contextUrn || '');
-  imageModalState.triggerEl = payload.triggerEl || document.activeElement || null;
-
-  clearHighlightForModalTrigger(imageModalState.triggerEl);
+  clearHighlightForModalTrigger(normalized.triggerEl);
+  applyImageModalPayload(normalized, { updateTriggerEl: true });
   suppressMapToImageHighlightUntilPointerMove();
 
   renderImageModalContent();
+  rebuildImageModalSequence(normalized);
 
   setImageModalVisibility(true);
   syncImageModalGeometryToViewport();
+  imageModalState.ignoreOpenClickUntil = Date.now() + 180;
   imageModalState.closeBtnEl.focus();
 }
 
@@ -1211,6 +1494,7 @@ function closeImageModal() {
   imageModalState.imageUrn = '';
   imageModalState.contextUrn = '';
   imageModalState.triggerEl = null;
+  imageModalState.ignoreOpenClickUntil = 0;
 
   suppressMapToImageHighlightUntilPointerMove();
 
@@ -1240,13 +1524,24 @@ function initImageModalEvents() {
 
   imageModalState.overlayEl.addEventListener('click', e => {
     const ignoreUntil = Math.max(
+      imageModalState.ignoreOpenClickUntil,
       imageModalDragState.ignoreOverlayClickUntil,
       imageModalResizeState.ignoreOverlayClickUntil
     );
     if (imageModalDragState.isDragging || imageModalResizeState.isResizing || Date.now() < ignoreUntil) {
       return;
     }
-    if (e.target === imageModalState.overlayEl || e.target.closest('[data-image-modal-close]')) {
+
+    const navBtn = e.target.closest('[data-image-modal-nav]');
+    if (navBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const dir = navBtn.dataset.imageModalNav === 'prev' ? -1 : 1;
+      stepImageModalSequence(dir);
+      return;
+    }
+
+    if (e.target.closest('[data-image-modal-close]')) {
       paneEvents.emit(UI_EVENT_IMAGE_MODAL_CLOSE);
     }
   });
@@ -1263,6 +1558,13 @@ function initImageModalEvents() {
         return;
       }
       paneEvents.emit(UI_EVENT_IMAGE_MODAL_CLOSE);
+      return;
+    }
+
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && imageModalState.isOpen) {
+      if (imageModalDragState.isDragging || imageModalResizeState.isResizing) return;
+      e.preventDefault();
+      stepImageModalSequence(e.key === 'ArrowLeft' ? -1 : 1);
     }
   });
 }
@@ -1303,7 +1605,7 @@ function highlightAndScrollToFirstAssociatedImage(entityUrn) {
   if (!entityUrn) return;
 
   const imageEl = firstImageElByEntityUrn.get(entityUrn);
-  if (!imageEl) return;
+  if (!imageEl) return null;
 
   if (activeMapHoverImageEl && activeMapHoverImageEl !== imageEl) {
     setImageHoverState(activeMapHoverImageEl, false);
@@ -1312,6 +1614,7 @@ function highlightAndScrollToFirstAssociatedImage(entityUrn) {
   activeMapHoverImageEl = imageEl;
   setImageHoverState(imageEl, true);
   imageEl.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+  return imageEl;
 }
 
 function cancelAttentionPulseForUrn(urn) {
@@ -1877,6 +2180,12 @@ async function previewHierarchyNode(urn) {
   hierarchyPreviewUrn = urn;
 }
 
+function clearHierarchyPreviewIfMatchingUrn(urn) {
+  if (!urn) return;
+  if (hierarchyPreviewUrn !== urn) return;
+  clearHierarchyPreview();
+}
+
 async function toggleHierarchyNode(urn) {
   if (!hierarchyState || !urn) return;
 
@@ -1928,8 +2237,14 @@ function wireHierarchyInteractions(slotEl) {
     button.addEventListener('mouseenter', () => {
       void previewHierarchyNode(button.dataset.hierarchyPreview);
     });
+    button.addEventListener('mouseleave', () => {
+      clearHierarchyPreviewIfMatchingUrn(button.dataset.hierarchyPreview);
+    });
     button.addEventListener('focus', () => {
       void previewHierarchyNode(button.dataset.hierarchyPreview);
+    });
+    button.addEventListener('blur', () => {
+      clearHierarchyPreviewIfMatchingUrn(button.dataset.hierarchyPreview);
     });
   });
 
@@ -2054,6 +2369,7 @@ function renderImages(images, el) {
     }
     html += '</div>';
     el.innerHTML = html;
+    invalidateImageModalSequence();
     wireSpatialImageHoverEvents(el);
     wireImageModalOpenEvents(el);
   });
@@ -2066,6 +2382,7 @@ function wireImageHoverEvents(containerEl) {
 
     el.addEventListener('mouseenter', e => {
       beginImageTileHighlight(el);
+      syncOpenImageModalFromElement(el, urn);
       paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: shouldPanFromEvent(e), source: 'image' });
     });
     el.addEventListener('mouseleave', () => {
@@ -2075,6 +2392,7 @@ function wireImageHoverEvents(containerEl) {
     el.addEventListener('focus', () => {
       if (shouldSuppressImageFocusHighlight(el)) return;
       beginImageTileHighlight(el);
+      syncOpenImageModalFromElement(el, urn);
       paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: isPanModifierDown(), source: 'image' });
     });
     el.addEventListener('blur', () => {
@@ -2132,6 +2450,7 @@ function wireSpatialImageHoverEvents(containerEl) {
       beginImageTileHighlight(el);
       resolvedUrn = await resolveFeatureToLayer(featureUrn);
       if (resolvedUrn && el.matches(':hover')) {
+        syncOpenImageModalFromElement(el, resolvedUrn);
         paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: resolvedUrn, shouldPan, source: 'image' });
       }
     });
@@ -2143,7 +2462,10 @@ function wireSpatialImageHoverEvents(containerEl) {
       if (shouldSuppressImageFocusHighlight(el)) return;
       beginImageTileHighlight(el);
       resolvedUrn = await resolveFeatureToLayer(featureUrn);
-      if (resolvedUrn) paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: resolvedUrn, shouldPan: isPanModifierDown(), source: 'image' });
+      if (resolvedUrn && document.activeElement === el) {
+        syncOpenImageModalFromElement(el, resolvedUrn);
+        paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: resolvedUrn, shouldPan: isPanModifierDown(), source: 'image' });
+      }
     });
     el.addEventListener('blur', () => {
       endImageTileHighlight(el);
@@ -2176,6 +2498,7 @@ function renderConceptImages(depictedItems, el) {
   }
   html += '</div>';
   el.innerHTML = html;
+  invalidateImageModalSequence();
   wireImageHoverEvents(el);
   wireImageModalOpenEvents(el);
 }
@@ -2284,8 +2607,10 @@ function initMapHoverListeners() {
 
   paneEvents.on(PANE_EVENT_ENTITY_HIGHLIGHT, ({ urn, source }) => {
     if (source !== 'map') return;
-    if (imageModalState.isOpen || suppressMapToImageHighlight) return;
-    highlightAndScrollToFirstAssociatedImage(urn);
+    if (suppressMapToImageHighlight) return;
+    const imageEl = highlightAndScrollToFirstAssociatedImage(urn);
+    if (!imageEl) return;
+    syncOpenImageModalFromEntityUrn(urn);
   });
 
   paneEvents.on(PANE_EVENT_ENTITY_CLEAR, ({ source }) => {
