@@ -12,6 +12,7 @@ const SPATIAL_TYPES = new Set([
   'urn:p-lod:id:insula',
   'urn:p-lod:id:space',
   'urn:p-lod:id:garden',
+  'urn:p-lod:id:feature',
 ]);
 
 // Human-readable labels for common RDF predicates
@@ -45,6 +46,11 @@ const TYPEAHEAD_SHOW_ID_TYPES = new Set(['region', 'insula', 'property']);
 const TYPEAHEAD_MAX_SUGGESTIONS = 64;
 const TYPEAHEAD_DEBOUNCE_MS = 120;
 const TYPEAHEAD_CACHE_MS = 5 * 60 * 1000;
+const IMAGE_HOVER_INTENT_DELAY_MS = 180;
+const LUNA_BASE_URL = 'https://umassamherst.lunaimaging.com';
+const IMAGE_MODAL_CAPTION_PREDICATE = 'urn:p-lod:id:x-luna-description';
+const LUNA_RECORD_ID_PREDICATE = 'urn:p-lod:id:x-luna-record-id';
+const LUNA_MEDIA_ID_PREDICATE  = 'urn:p-lod:id:x-luna-media-id';
 
 const typeaheadState = {
   suggestions: [],
@@ -622,11 +628,16 @@ let hierarchyPreviewLayer = null;
 let hierarchyPreviewUrn = null;
 let hierarchyPreviewRequestToken = 0;
 let suppressMapToImageHighlight = false;
+let imageHoverIntentTimeoutByEl = new WeakMap();
 const imageModalState = {
   isOpen: false,
   imageUrl: '',
   imageUrn: '',
   contextUrn: '',
+  imageCaption: '',
+  lunaLandingUrl: '',
+  iiifManifestUrl: '',
+  iiifImageUrl: '',
   geometryInitialized: false,
   triggerEl: null,
   suppressFocusHighlightEl: null,
@@ -634,11 +645,26 @@ const imageModalState = {
   dialogEl: null,
   headerEl: null,
   titleEl: null,
+  mediaEl: null,
   imgEl: null,
   infoEl: null,
+  infoBodyEl: null,
   closeBtnEl: null,
   prevBtnEl: null,
   nextBtnEl: null,
+  filterToggleBtnEl: null,
+  zoomInBtnEl: null,
+  zoomOutBtnEl: null,
+  zoomResetBtnEl: null,
+  filterControlsEl: null,
+  filterBrightnessEl: null,
+  filterContrastEl: null,
+  filterSaturationEl: null,
+  filterGrayscaleEl: null,
+  filterInvertEl: null,
+  filterResetBtnEl: null,
+  filtersVisible: false,
+  activeDisplayImageUrl: '',
   resizeHandleEl: null,
   ignoreOpenClickUntil: 0,
   imageSequence: [],
@@ -646,6 +672,11 @@ const imageModalState = {
   sequenceVersion: 0,
   navHighlightUrn: '',
   navHighlightToken: 0,
+  captionRequestToken: 0,
+  captionByImageUrn: new Map(),
+  lunaLandingByImageUrn: new Map(),
+  iiifManifestByImageUrn: new Map(),
+  iiifImageByImageUrn: new Map(),
   eventsBound: false,
 };
 
@@ -678,12 +709,46 @@ const imageModalResizeState = {
   eventsBound: false,
 };
 
+const imageModalZoomState = {
+  scale: 1,
+  panX: 0,
+  panY: 0,
+  isPanning: false,
+  pointerId: null,
+  startX: 0,
+  startY: 0,
+  startPanX: 0,
+  startPanY: 0,
+  eventsBound: false,
+};
+
+const IMAGE_MODAL_FILTER_DEFAULTS = Object.freeze({
+  brightness: 100,
+  contrast: 100,
+  saturation: 100,
+  grayscale: 0,
+  invert: 0,
+});
+
+const imageModalFilterState = {
+  brightness: IMAGE_MODAL_FILTER_DEFAULTS.brightness,
+  contrast: IMAGE_MODAL_FILTER_DEFAULTS.contrast,
+  saturation: IMAGE_MODAL_FILTER_DEFAULTS.saturation,
+  grayscale: IMAGE_MODAL_FILTER_DEFAULTS.grayscale,
+  invert: IMAGE_MODAL_FILTER_DEFAULTS.invert,
+  eventsBound: false,
+};
+
 const IMAGE_MODAL_INITIAL_GEOMETRY = Object.freeze({
   widthPx: 760,
   heightPx: 560,
   offsetX: -90,
   offsetY: 0,
 });
+
+const IMAGE_MODAL_ZOOM_MIN = 1;
+const IMAGE_MODAL_ZOOM_MAX = 6;
+const IMAGE_MODAL_ZOOM_STEP = 1.2;
 
 const HIGHLIGHT_STYLE = Object.freeze({
   color: '#ff9900',
@@ -745,6 +810,27 @@ function clearActiveMapHoverImage() {
   activeMapHoverImageEl = null;
 }
 
+function cancelImageHoverIntent(el) {
+  if (!el) return;
+  const timeoutId = imageHoverIntentTimeoutByEl.get(el);
+  if (!timeoutId) return;
+  clearTimeout(timeoutId);
+  imageHoverIntentTimeoutByEl.delete(el);
+}
+
+function scheduleImageHoverIntent(el, callback) {
+  if (!el || typeof callback !== 'function') return;
+  cancelImageHoverIntent(el);
+
+  const timeoutId = setTimeout(() => {
+    if (imageHoverIntentTimeoutByEl.get(el) !== timeoutId) return;
+    imageHoverIntentTimeoutByEl.delete(el);
+    callback();
+  }, IMAGE_HOVER_INTENT_DELAY_MS);
+
+  imageHoverIntentTimeoutByEl.set(el, timeoutId);
+}
+
 function clearImageAssociations() {
   imageAssociationBuildToken += 1;
   firstImageElByEntityUrn.clear();
@@ -764,8 +850,178 @@ function normalizeImageModalPayload(payload = {}, { requireImageUrl = true } = {
     imageUrl,
     imageUrn: String(payload.imageUrn || '').trim(),
     contextUrn: String(payload.contextUrn || '').trim(),
+    imageCaption: normalizeImageModalCaption(payload.imageCaption || ''),
+    iiifManifestUrl: String(payload.iiifManifestUrl || '').trim(),
+    iiifImageUrl: String(payload.iiifImageUrl || '').trim(),
     triggerEl,
   };
+}
+
+function normalizeImageModalCaption(raw) {
+  const text = String(raw || '').replace(/\r\n/g, '\n').trim();
+  return text;
+}
+
+function formatImageModalCaptionHtml(caption) {
+  return escHtml(caption).replace(/\n/g, '<br>');
+}
+
+function renderImageModalUrnValue(urn) {
+  const short = extractShortId(urn);
+  return '<span class="image-modal-urn-short">' + escHtml(short) + '</span>' +
+    '<button type="button" class="image-modal-urn-action" data-image-modal-navigate="' + escAttr(urn) + '" aria-label="Open ' + escAttr(short) + '" title="Open ' + escAttr(short) + '">↗</button>';
+}
+
+function getLunaTildeVal(imageUrn) {
+  if (imageUrn.startsWith('urn:p-lod:id:luna_img_PALP')) return '14';
+  if (imageUrn.startsWith('urn:p-lod:id:luna_img_PPM'))  return '16';
+  return null;
+}
+
+function buildLunaLandingUrl(imageUrn, lRecord, lMedia) {
+  const tilde = getLunaTildeVal(imageUrn);
+  if (!tilde || !lRecord || !lMedia) return '';
+  return `${LUNA_BASE_URL}/luna/servlet/detail/umass~${tilde}~${tilde}~${lRecord}~${lMedia}`;
+}
+
+function buildLunaIiifIdentity(imageUrn, lRecord, lMedia) {
+  const tilde = getLunaTildeVal(imageUrn);
+  if (!tilde || !lRecord || !lMedia) return '';
+  return `umass~${tilde}~${tilde}~${lRecord}~${lMedia}`;
+}
+
+function buildLunaIiifManifestUrl(lunaIdentity) {
+  if (!lunaIdentity) return '';
+  return `${LUNA_BASE_URL}/luna/servlet/iiif/m/${lunaIdentity}/manifest`;
+}
+
+function extractIiifImageUrlFromManifest(manifest) {
+  if (!manifest || typeof manifest !== 'object') return '';
+
+  const tryGet = obj => {
+    if (!obj || typeof obj !== 'object') return '';
+    return String(obj.id || obj['@id'] || '').trim();
+  };
+
+  const seq = Array.isArray(manifest.sequences) ? manifest.sequences[0] : null;
+  const canvas = seq && Array.isArray(seq.canvases) ? seq.canvases[0] : null;
+  const imageAnno = canvas && Array.isArray(canvas.images) ? canvas.images[0] : null;
+  const resource = imageAnno && imageAnno.resource ? imageAnno.resource : null;
+  const iiif2Direct = tryGet(resource);
+  if (iiif2Direct) return iiif2Direct;
+
+  const items = Array.isArray(manifest.items) ? manifest.items : null;
+  const canvas3 = items ? items[0] : null;
+  const annoPage = canvas3 && Array.isArray(canvas3.items) ? canvas3.items[0] : null;
+  const anno = annoPage && Array.isArray(annoPage.items) ? annoPage.items[0] : null;
+  const body = anno && anno.body ? anno.body : null;
+  const iiif3Direct = tryGet(body);
+  if (iiif3Direct) return iiif3Direct;
+
+  const service = (body && (body.service || (Array.isArray(body.service) ? body.service[0] : null)))
+    || (resource && (resource.service || (Array.isArray(resource.service) ? resource.service[0] : null)));
+  const serviceId = tryGet(service);
+  if (!serviceId) return '';
+  return `${serviceId.replace(/\/$/, '')}/full/1200,/0/default.jpg`;
+}
+
+async function fetchIiifImageUrlFromManifest(iiifManifestUrl) {
+  if (!iiifManifestUrl) return '';
+
+  try {
+    const r = await fetch(iiifManifestUrl);
+    if (!r.ok) return '';
+    const manifest = await r.json();
+    return extractIiifImageUrlFromManifest(manifest);
+  } catch (_) {
+    return '';
+  }
+}
+
+async function fetchImageIdData(imageUrn) {
+  if (!imageUrn) return { caption: '', lunaLandingUrl: '', iiifManifestUrl: '', iiifImageUrl: '' };
+
+  try {
+    const shortId = extractShortId(imageUrn);
+    const r = await fetch(`${API_BASE}/id/${encodeURIComponent(shortId)}`);
+    if (!r.ok) return { caption: '', lunaLandingUrl: '', iiifManifestUrl: '', iiifImageUrl: '' };
+    const triples = flattenTriples(await r.json());
+    const caption = normalizeImageModalCaption((triples[IMAGE_MODAL_CAPTION_PREDICATE] || [])[0] || '');
+    const lRecord = (triples[LUNA_RECORD_ID_PREDICATE] || [])[0] || '';
+    const lMedia  = (triples[LUNA_MEDIA_ID_PREDICATE]  || [])[0] || '';
+    const lunaIdentity = buildLunaIiifIdentity(imageUrn, lRecord, lMedia);
+    const iiifManifestUrl = buildLunaIiifManifestUrl(lunaIdentity);
+    const iiifImageUrl = await fetchIiifImageUrlFromManifest(iiifManifestUrl);
+    return {
+      caption,
+      lunaLandingUrl: buildLunaLandingUrl(imageUrn, lRecord, lMedia),
+      iiifManifestUrl,
+      iiifImageUrl,
+    };
+  } catch (_) {
+    return { caption: '', lunaLandingUrl: '', iiifManifestUrl: '', iiifImageUrl: '' };
+  }
+}
+
+function requestImageModalCaptionIfMissing() {
+  const imageUrn = imageModalState.imageUrn;
+  if (!imageUrn || (imageModalState.imageCaption && imageModalState.lunaLandingUrl && imageModalState.iiifManifestUrl)) return;
+
+  if (imageModalState.captionByImageUrn.has(imageUrn)) {
+    const cachedCaption = imageModalState.captionByImageUrn.get(imageUrn) || '';
+    const cachedLuna   = imageModalState.lunaLandingByImageUrn.get(imageUrn) || '';
+    const cachedIiifManifest = imageModalState.iiifManifestByImageUrn.get(imageUrn) || '';
+    const cachedIiifImage = imageModalState.iiifImageByImageUrn.get(imageUrn) || '';
+    let changed = false;
+    if (cachedCaption && imageModalState.imageUrn === imageUrn && !imageModalState.imageCaption) {
+      imageModalState.imageCaption = cachedCaption;
+      changed = true;
+    }
+    if (cachedLuna && imageModalState.imageUrn === imageUrn && !imageModalState.lunaLandingUrl) {
+      imageModalState.lunaLandingUrl = cachedLuna;
+      changed = true;
+    }
+    if (cachedIiifManifest && imageModalState.imageUrn === imageUrn && !imageModalState.iiifManifestUrl) {
+      imageModalState.iiifManifestUrl = cachedIiifManifest;
+      changed = true;
+    }
+    if (cachedIiifImage && imageModalState.imageUrn === imageUrn && !imageModalState.iiifImageUrl) {
+      imageModalState.iiifImageUrl = cachedIiifImage;
+      changed = true;
+    }
+    if (changed) renderImageModalContent();
+    return;
+  }
+
+  const token = ++imageModalState.captionRequestToken;
+  void fetchImageIdData(imageUrn).then(({ caption, lunaLandingUrl, iiifManifestUrl, iiifImageUrl }) => {
+    imageModalState.captionByImageUrn.set(imageUrn, caption || '');
+    imageModalState.lunaLandingByImageUrn.set(imageUrn, lunaLandingUrl || '');
+    imageModalState.iiifManifestByImageUrn.set(imageUrn, iiifManifestUrl || '');
+    imageModalState.iiifImageByImageUrn.set(imageUrn, iiifImageUrl || '');
+    if (token !== imageModalState.captionRequestToken) return;
+    if (!imageModalState.isOpen) return;
+    if (imageModalState.imageUrn !== imageUrn) return;
+
+    let changed = false;
+    if (caption && !imageModalState.imageCaption) {
+      imageModalState.imageCaption = caption;
+      changed = true;
+    }
+    if (lunaLandingUrl && !imageModalState.lunaLandingUrl) {
+      imageModalState.lunaLandingUrl = lunaLandingUrl;
+      changed = true;
+    }
+    if (iiifManifestUrl && !imageModalState.iiifManifestUrl) {
+      imageModalState.iiifManifestUrl = iiifManifestUrl;
+      changed = true;
+    }
+    if (iiifImageUrl && !imageModalState.iiifImageUrl) {
+      imageModalState.iiifImageUrl = iiifImageUrl;
+      changed = true;
+    }
+    if (changed) renderImageModalContent();
+  });
 }
 
 function getImageModalTileFromElement(el) {
@@ -789,6 +1045,7 @@ function getImageModalPayloadFromSequenceTile(tileEl) {
     imageUrl: tileEl.dataset.imageUrl || '',
     imageUrn: tileEl.dataset.imageUrn || tileEl.dataset.entityUrn || '',
     contextUrn: tileEl.dataset.featureUrn || tileEl.dataset.entityUrn || '',
+    imageCaption: tileEl.dataset.imageCaption || '',
     triggerEl: tileEl,
   }, { requireImageUrl: false });
 }
@@ -950,13 +1207,22 @@ function hasSameImageModalPayload(payload) {
   return !!payload
     && imageModalState.imageUrl === payload.imageUrl
     && imageModalState.imageUrn === payload.imageUrn
-    && imageModalState.contextUrn === payload.contextUrn;
+    && imageModalState.contextUrn === payload.contextUrn
+    && imageModalState.imageCaption === payload.imageCaption
+    && imageModalState.lunaLandingUrl === (payload.lunaLandingUrl || '')
+    && imageModalState.iiifManifestUrl === (payload.iiifManifestUrl || '')
+    && imageModalState.iiifImageUrl === (payload.iiifImageUrl || '');
 }
 
 function applyImageModalPayload(payload, { updateTriggerEl = false } = {}) {
+  imageModalState.captionRequestToken += 1;
   imageModalState.imageUrl = payload.imageUrl;
   imageModalState.imageUrn = payload.imageUrn;
   imageModalState.contextUrn = payload.contextUrn;
+  imageModalState.imageCaption = payload.imageCaption || '';
+  imageModalState.lunaLandingUrl = payload.lunaLandingUrl || '';
+  imageModalState.iiifManifestUrl = payload.iiifManifestUrl || '';
+  imageModalState.iiifImageUrl = payload.iiifImageUrl || '';
   if (updateTriggerEl) imageModalState.triggerEl = payload.triggerEl || null;
 }
 
@@ -975,6 +1241,7 @@ function getImageModalPayloadFromElement(el, contextUrn = '') {
     imageUrl,
     imageUrn: el.dataset.imageUrn || el.dataset.entityUrn || '',
     contextUrn: contextUrn || el.dataset.featureUrn || el.dataset.entityUrn || '',
+    imageCaption: el.dataset.imageCaption || '',
     triggerEl: el,
   });
 }
@@ -1234,6 +1501,7 @@ function bindImageModalDragEvents() {
   window.addEventListener('resize', () => {
     if (!imageModalState.isOpen || imageModalDragState.isDragging || imageModalResizeState.isResizing) return;
     syncImageModalGeometryToViewport();
+    applyImageModalImageTransform();
   });
 }
 
@@ -1337,6 +1605,285 @@ function bindImageModalResizeEvents() {
   imageModalState.resizeHandleEl.addEventListener('pointerdown', onImageModalResizePointerDown);
 }
 
+function clampImageModalPan() {
+  if (!imageModalState.imgEl || !imageModalState.mediaEl) return;
+  if (imageModalZoomState.scale <= IMAGE_MODAL_ZOOM_MIN) {
+    imageModalZoomState.panX = 0;
+    imageModalZoomState.panY = 0;
+    return;
+  }
+
+  const viewportW = imageModalState.mediaEl.clientWidth;
+  const viewportH = imageModalState.mediaEl.clientHeight;
+  const baseW = imageModalState.imgEl.offsetWidth;
+  const baseH = imageModalState.imgEl.offsetHeight;
+  if (!viewportW || !viewportH || !baseW || !baseH) {
+    imageModalZoomState.panX = 0;
+    imageModalZoomState.panY = 0;
+    return;
+  }
+
+  const scaledW = baseW * imageModalZoomState.scale;
+  const scaledH = baseH * imageModalZoomState.scale;
+  const maxPanX = Math.max(0, (scaledW - viewportW) / 2);
+  const maxPanY = Math.max(0, (scaledH - viewportH) / 2);
+
+  imageModalZoomState.panX = Math.max(-maxPanX, Math.min(maxPanX, imageModalZoomState.panX));
+  imageModalZoomState.panY = Math.max(-maxPanY, Math.min(maxPanY, imageModalZoomState.panY));
+}
+
+function updateImageModalZoomControls() {
+  const canZoomIn = imageModalZoomState.scale < IMAGE_MODAL_ZOOM_MAX - 0.001;
+  const canZoomOut = imageModalZoomState.scale > IMAGE_MODAL_ZOOM_MIN + 0.001;
+
+  if (imageModalState.zoomInBtnEl) imageModalState.zoomInBtnEl.disabled = !canZoomIn;
+  if (imageModalState.zoomOutBtnEl) imageModalState.zoomOutBtnEl.disabled = !canZoomOut;
+  if (imageModalState.zoomResetBtnEl) imageModalState.zoomResetBtnEl.disabled = !canZoomOut;
+}
+
+function applyImageModalImageTransform() {
+  if (!imageModalState.imgEl || !imageModalState.mediaEl) return;
+
+  clampImageModalPan();
+
+  const scale = imageModalZoomState.scale;
+  const tx = imageModalZoomState.panX;
+  const ty = imageModalZoomState.panY;
+  imageModalState.imgEl.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+  imageModalState.mediaEl.classList.toggle('is-zoomed', scale > IMAGE_MODAL_ZOOM_MIN + 0.001);
+
+  updateImageModalZoomControls();
+}
+
+function resetImageModalZoom() {
+  imageModalZoomState.scale = IMAGE_MODAL_ZOOM_MIN;
+  imageModalZoomState.panX = 0;
+  imageModalZoomState.panY = 0;
+  applyImageModalImageTransform();
+}
+
+function setImageModalZoom(nextScale) {
+  const clamped = Math.max(IMAGE_MODAL_ZOOM_MIN, Math.min(IMAGE_MODAL_ZOOM_MAX, nextScale));
+  imageModalZoomState.scale = clamped;
+  if (clamped <= IMAGE_MODAL_ZOOM_MIN + 0.001) {
+    imageModalZoomState.panX = 0;
+    imageModalZoomState.panY = 0;
+  }
+  applyImageModalImageTransform();
+}
+
+function zoomImageModalBy(factor) {
+  if (!Number.isFinite(factor) || factor <= 0) return;
+  setImageModalZoom(imageModalZoomState.scale * factor);
+}
+
+function endImageModalPan(pointerId = null) {
+  if (!imageModalZoomState.isPanning) return;
+  if (pointerId !== null && imageModalZoomState.pointerId !== pointerId) return;
+
+  const activePointerId = imageModalZoomState.pointerId;
+  imageModalZoomState.isPanning = false;
+  imageModalZoomState.pointerId = null;
+
+  if (imageModalState.mediaEl && activePointerId !== null && imageModalState.mediaEl.releasePointerCapture) {
+    try {
+      imageModalState.mediaEl.releasePointerCapture(activePointerId);
+    } catch (_) {
+      // Ignore capture release errors.
+    }
+  }
+}
+
+function onImageModalPanPointerMove(e) {
+  if (!imageModalZoomState.isPanning) return;
+  if (e.pointerId !== imageModalZoomState.pointerId) return;
+
+  e.preventDefault();
+
+  const dx = e.clientX - imageModalZoomState.startX;
+  const dy = e.clientY - imageModalZoomState.startY;
+  imageModalZoomState.panX = imageModalZoomState.startPanX + dx;
+  imageModalZoomState.panY = imageModalZoomState.startPanY + dy;
+  applyImageModalImageTransform();
+}
+
+function onImageModalPanPointerUp(e) {
+  endImageModalPan(e.pointerId);
+}
+
+function onImageModalPanPointerCancel(e) {
+  endImageModalPan(e.pointerId);
+}
+
+function onImageModalPanPointerDown(e) {
+  if (!imageModalState.isOpen || !imageModalState.mediaEl) return;
+  if (e.button !== 0) return;
+  if (imageModalZoomState.scale <= IMAGE_MODAL_ZOOM_MIN + 0.001) return;
+  if (e.target && e.target.closest('[data-image-modal-zoom]')) return;
+  if (e.target && e.target.closest('[data-image-modal-filter]')) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+
+  imageModalZoomState.isPanning = true;
+  imageModalZoomState.pointerId = e.pointerId;
+  imageModalZoomState.startX = e.clientX;
+  imageModalZoomState.startY = e.clientY;
+  imageModalZoomState.startPanX = imageModalZoomState.panX;
+  imageModalZoomState.startPanY = imageModalZoomState.panY;
+
+  if (imageModalState.mediaEl.setPointerCapture) {
+    try {
+      imageModalState.mediaEl.setPointerCapture(e.pointerId);
+    } catch (_) {
+      // Ignore capture errors.
+    }
+  }
+}
+
+function onImageModalMediaWheel(e) {
+  if (!imageModalState.isOpen) return;
+  if (!imageModalState.imgEl || !imageModalState.imgEl.getAttribute('src')) return;
+  if (e.target && e.target.closest('[data-image-modal-filter]')) return;
+
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? IMAGE_MODAL_ZOOM_STEP : (1 / IMAGE_MODAL_ZOOM_STEP);
+  zoomImageModalBy(factor);
+}
+
+function applyImageModalImageFilter() {
+  if (!imageModalState.imgEl) return;
+
+  const filters = [
+    `brightness(${imageModalFilterState.brightness}%)`,
+    `contrast(${imageModalFilterState.contrast}%)`,
+    `saturate(${imageModalFilterState.saturation}%)`,
+    `grayscale(${imageModalFilterState.grayscale}%)`,
+    `invert(${imageModalFilterState.invert}%)`,
+  ];
+
+  imageModalState.imgEl.style.filter = filters.join(' ');
+}
+
+function syncImageModalFilterControls() {
+  if (imageModalState.filterBrightnessEl) imageModalState.filterBrightnessEl.value = String(imageModalFilterState.brightness);
+  if (imageModalState.filterContrastEl) imageModalState.filterContrastEl.value = String(imageModalFilterState.contrast);
+  if (imageModalState.filterSaturationEl) imageModalState.filterSaturationEl.value = String(imageModalFilterState.saturation);
+  if (imageModalState.filterGrayscaleEl) imageModalState.filterGrayscaleEl.value = String(imageModalFilterState.grayscale);
+  if (imageModalState.filterInvertEl) imageModalState.filterInvertEl.value = String(imageModalFilterState.invert);
+}
+
+function refreshImageModalFiltersFromControls() {
+  const read = (el, fallback) => {
+    const n = Number(el && el.value);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
+  imageModalFilterState.brightness = read(imageModalState.filterBrightnessEl, IMAGE_MODAL_FILTER_DEFAULTS.brightness);
+  imageModalFilterState.contrast = read(imageModalState.filterContrastEl, IMAGE_MODAL_FILTER_DEFAULTS.contrast);
+  imageModalFilterState.saturation = read(imageModalState.filterSaturationEl, IMAGE_MODAL_FILTER_DEFAULTS.saturation);
+  imageModalFilterState.grayscale = read(imageModalState.filterGrayscaleEl, IMAGE_MODAL_FILTER_DEFAULTS.grayscale);
+  imageModalFilterState.invert = read(imageModalState.filterInvertEl, IMAGE_MODAL_FILTER_DEFAULTS.invert);
+
+  applyImageModalImageFilter();
+}
+
+function resetImageModalFilters() {
+  imageModalFilterState.brightness = IMAGE_MODAL_FILTER_DEFAULTS.brightness;
+  imageModalFilterState.contrast = IMAGE_MODAL_FILTER_DEFAULTS.contrast;
+  imageModalFilterState.saturation = IMAGE_MODAL_FILTER_DEFAULTS.saturation;
+  imageModalFilterState.grayscale = IMAGE_MODAL_FILTER_DEFAULTS.grayscale;
+  imageModalFilterState.invert = IMAGE_MODAL_FILTER_DEFAULTS.invert;
+  syncImageModalFilterControls();
+  applyImageModalImageFilter();
+}
+
+function syncImageModalFilterVisibility() {
+  if (!imageModalState.filterControlsEl) return;
+  const visible = !!imageModalState.filtersVisible;
+  imageModalState.filterControlsEl.hidden = !visible;
+  if (imageModalState.filterToggleBtnEl) {
+    imageModalState.filterToggleBtnEl.setAttribute('aria-pressed', visible ? 'true' : 'false');
+    imageModalState.filterToggleBtnEl.classList.toggle('is-active', visible);
+  }
+}
+
+function setImageModalFilterVisibility(nextVisible) {
+  imageModalState.filtersVisible = !!nextVisible;
+  syncImageModalFilterVisibility();
+}
+
+function bindImageModalFilterEvents() {
+  ensureImageModalInitialized();
+  if (imageModalFilterState.eventsBound) return;
+
+  const filterControls = [
+    imageModalState.filterBrightnessEl,
+    imageModalState.filterContrastEl,
+    imageModalState.filterSaturationEl,
+    imageModalState.filterGrayscaleEl,
+    imageModalState.filterInvertEl,
+  ].filter(Boolean);
+
+  if (!filterControls.length) return;
+
+  imageModalFilterState.eventsBound = true;
+
+  filterControls.forEach(inputEl => {
+    inputEl.addEventListener('input', refreshImageModalFiltersFromControls);
+    inputEl.addEventListener('change', refreshImageModalFiltersFromControls);
+  });
+
+  if (imageModalState.filterResetBtnEl) {
+    imageModalState.filterResetBtnEl.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      resetImageModalFilters();
+    });
+  }
+}
+
+function bindImageModalZoomEvents() {
+  ensureImageModalInitialized();
+  if (imageModalZoomState.eventsBound || !imageModalState.mediaEl || !imageModalState.imgEl) return;
+
+  imageModalZoomState.eventsBound = true;
+
+  imageModalState.mediaEl.addEventListener('wheel', onImageModalMediaWheel, { passive: false });
+  imageModalState.mediaEl.addEventListener('pointerdown', onImageModalPanPointerDown);
+  imageModalState.mediaEl.addEventListener('pointermove', onImageModalPanPointerMove);
+  imageModalState.mediaEl.addEventListener('pointerup', onImageModalPanPointerUp);
+  imageModalState.mediaEl.addEventListener('pointercancel', onImageModalPanPointerCancel);
+
+  imageModalState.imgEl.addEventListener('load', () => {
+    applyImageModalImageTransform();
+  });
+
+  if (imageModalState.zoomInBtnEl) {
+    imageModalState.zoomInBtnEl.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      zoomImageModalBy(IMAGE_MODAL_ZOOM_STEP);
+    });
+  }
+
+  if (imageModalState.zoomOutBtnEl) {
+    imageModalState.zoomOutBtnEl.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      zoomImageModalBy(1 / IMAGE_MODAL_ZOOM_STEP);
+    });
+  }
+
+  if (imageModalState.zoomResetBtnEl) {
+    imageModalState.zoomResetBtnEl.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      resetImageModalZoom();
+    });
+  }
+}
+
 function suppressMapToImageHighlightUntilPointerMove() {
   suppressMapToImageHighlight = true;
 }
@@ -1372,9 +1919,27 @@ function ensureImageModalInitialized() {
       '</div>' +
       '<div class="image-modal-content">' +
         '<div class="image-modal-media">' +
+          '<div class="image-modal-filter-controls" data-image-modal-filter="controls" aria-label="Image adjustments" hidden>' +
+            '<div class="image-modal-filter-grid">' +
+              '<label class="image-modal-filter-item" title="Brightness"><span>B</span><input type="range" min="50" max="200" step="5" value="100" data-image-modal-filter="brightness" aria-label="Brightness"></label>' +
+              '<label class="image-modal-filter-item" title="Contrast"><span>C</span><input type="range" min="50" max="200" step="5" value="100" data-image-modal-filter="contrast" aria-label="Contrast"></label>' +
+              '<label class="image-modal-filter-item" title="Saturation"><span>S</span><input type="range" min="0" max="200" step="5" value="100" data-image-modal-filter="saturation" aria-label="Saturation"></label>' +
+              '<label class="image-modal-filter-item" title="Grayscale"><span>G</span><input type="range" min="0" max="100" step="5" value="0" data-image-modal-filter="grayscale" aria-label="Grayscale"></label>' +
+              '<label class="image-modal-filter-item" title="Invert"><span>I</span><input type="range" min="0" max="100" step="5" value="0" data-image-modal-filter="invert" aria-label="Invert"></label>' +
+            '</div>' +
+            '<button type="button" class="image-modal-filter-reset" data-image-modal-filter="reset" aria-label="Reset adjustments" title="Reset adjustments">Reset</button>' +
+          '</div>' +
+          '<div class="image-modal-zoom-controls" aria-label="Image zoom controls">' +
+            '<button type="button" class="image-modal-zoom-btn" data-image-modal-zoom="in" aria-label="Zoom in" title="Zoom in">+</button>' +
+            '<button type="button" class="image-modal-zoom-btn" data-image-modal-zoom="out" aria-label="Zoom out" title="Zoom out">-</button>' +
+            '<button type="button" class="image-modal-zoom-btn" data-image-modal-zoom="reset" aria-label="Reset zoom" title="Reset zoom">100%</button>' +
+            '<button type="button" class="image-modal-tool-toggle" data-image-modal-toggle-filters="button" aria-label="Show image adjustments" title="Show image adjustments" aria-pressed="false">Adjust</button>' +
+          '</div>' +
           '<img class="image-modal-img" alt="">' +
         '</div>' +
-        '<aside class="image-modal-info" aria-live="polite"></aside>' +
+        '<aside class="image-modal-info" aria-live="polite">' +
+          '<div class="image-modal-info-body"></div>' +
+        '</aside>' +
       '</div>' +
       '<button type="button" class="image-modal-resize-handle" data-image-modal-resize-handle="true" aria-label="Resize image modal"></button>' +
     '</div>';
@@ -1385,38 +1950,79 @@ function ensureImageModalInitialized() {
   imageModalState.dialogEl = overlayEl.querySelector('.image-modal-dialog');
   imageModalState.headerEl = overlayEl.querySelector('.image-modal-header');
   imageModalState.titleEl = overlayEl.querySelector('.image-modal-title');
+  imageModalState.mediaEl = overlayEl.querySelector('.image-modal-media');
   imageModalState.imgEl = overlayEl.querySelector('.image-modal-img');
+  imageModalState.filterToggleBtnEl = overlayEl.querySelector('[data-image-modal-toggle-filters="button"]');
+  imageModalState.filterControlsEl = overlayEl.querySelector('[data-image-modal-filter="controls"]');
+  imageModalState.filterBrightnessEl = overlayEl.querySelector('[data-image-modal-filter="brightness"]');
+  imageModalState.filterContrastEl = overlayEl.querySelector('[data-image-modal-filter="contrast"]');
+  imageModalState.filterSaturationEl = overlayEl.querySelector('[data-image-modal-filter="saturation"]');
+  imageModalState.filterGrayscaleEl = overlayEl.querySelector('[data-image-modal-filter="grayscale"]');
+  imageModalState.filterInvertEl = overlayEl.querySelector('[data-image-modal-filter="invert"]');
+  imageModalState.filterResetBtnEl = overlayEl.querySelector('[data-image-modal-filter="reset"]');
   imageModalState.infoEl = overlayEl.querySelector('.image-modal-info');
+  imageModalState.infoBodyEl = overlayEl.querySelector('.image-modal-info-body');
   imageModalState.prevBtnEl = overlayEl.querySelector('.image-modal-nav-prev');
   imageModalState.nextBtnEl = overlayEl.querySelector('.image-modal-nav-next');
+  imageModalState.zoomInBtnEl = overlayEl.querySelector('[data-image-modal-zoom="in"]');
+  imageModalState.zoomOutBtnEl = overlayEl.querySelector('[data-image-modal-zoom="out"]');
+  imageModalState.zoomResetBtnEl = overlayEl.querySelector('[data-image-modal-zoom="reset"]');
   imageModalState.closeBtnEl = overlayEl.querySelector('.image-modal-close');
   imageModalState.resizeHandleEl = overlayEl.querySelector('.image-modal-resize-handle');
 }
 
 function renderImageModalContent() {
-  if (!imageModalState.titleEl || !imageModalState.imgEl || !imageModalState.infoEl) return;
+  if (!imageModalState.titleEl || !imageModalState.imgEl || !imageModalState.infoBodyEl) return;
 
   const imageShort = imageModalState.imageUrn ? extractShortId(imageModalState.imageUrn) : 'image';
   imageModalState.titleEl.textContent = imageShort;
-  if (imageModalState.imageUrl) {
-    imageModalState.imgEl.src = imageModalState.imageUrl;
+  const displayImageUrl = imageModalState.iiifImageUrl || imageModalState.imageUrl;
+  const imageChanged = imageModalState.activeDisplayImageUrl !== displayImageUrl;
+  if (displayImageUrl) {
+    if (imageChanged || imageModalState.imgEl.src !== displayImageUrl) {
+      imageModalState.imgEl.src = displayImageUrl;
+    }
   } else {
     imageModalState.imgEl.removeAttribute('src');
   }
+  imageModalState.activeDisplayImageUrl = displayImageUrl;
+  if (imageChanged) resetImageModalZoom();
+  if (imageChanged) resetImageModalFilters();
   imageModalState.imgEl.alt = imageShort;
 
   const imageUrnHtml = imageModalState.imageUrn
-    ? `<div class="image-modal-info-row"><span class="image-modal-info-key">Image</span><span class="image-modal-info-value">${escHtml(imageModalState.imageUrn)}</span></div>`
+    ? `<div class="image-modal-info-row"><span class="image-modal-info-key">Image</span><span class="image-modal-info-value image-modal-info-value-urn">${renderImageModalUrnValue(imageModalState.imageUrn)}</span></div>`
     : '';
   const contextUrnHtml = imageModalState.contextUrn
-    ? `<div class="image-modal-info-row"><span class="image-modal-info-key">Context</span><span class="image-modal-info-value">${escHtml(imageModalState.contextUrn)}</span></div>`
+    ? `<div class="image-modal-info-row"><span class="image-modal-info-key">Context</span><span class="image-modal-info-value image-modal-info-value-urn">${renderImageModalUrnValue(imageModalState.contextUrn)}</span></div>`
+    : '';
+  const captionHtml = imageModalState.imageCaption
+    ? `<div class="image-modal-info-row"><span class="image-modal-info-key">Caption</span><p class="image-modal-caption">${formatImageModalCaptionHtml(imageModalState.imageCaption)}</p></div>`
+    : '';
+  const lunaLinkHtml = imageModalState.lunaLandingUrl
+    ? `<div class="image-modal-info-row image-modal-luna-row"><span class="image-modal-info-key">Image info and credits:</span><a class="image-modal-luna-link" href="${escAttr(imageModalState.lunaLandingUrl)}" target="_blank" rel="noopener noreferrer">↗</a></div>`
+    : '';
+  const iiifManifestHtml = imageModalState.iiifManifestUrl
+    ? `<div class="image-modal-info-row image-modal-luna-row"><span class="image-modal-info-key">IIIF manifest:</span><a class="image-modal-luna-link" href="${escAttr(imageModalState.iiifManifestUrl)}" target="_blank" rel="noopener noreferrer">↗</a></div>`
+    : '';
+  const miradorUrl = imageModalState.iiifManifestUrl
+    ? `https://projectmirador.org/embed/?iiif-content=${encodeURIComponent(imageModalState.iiifManifestUrl)}`
+    : '';
+  const miradorHtml = miradorUrl
+    ? `<div class="image-modal-info-row image-modal-luna-row"><span class="image-modal-info-key">View in Mirador:</span><a class="image-modal-luna-link" href="${escAttr(miradorUrl)}" target="_blank" rel="noopener noreferrer">↗</a></div>`
     : '';
 
-  imageModalState.infoEl.innerHTML =
+  imageModalState.infoBodyEl.innerHTML =
     '<p class="image-modal-info-title">Details</p>' +
     imageUrnHtml +
     contextUrnHtml +
-    '<p class="image-modal-info-note">Modal scaffolding is ready for richer fields from gallery payload and optional runtime /id lookups.</p>';
+    captionHtml +
+    lunaLinkHtml +
+    iiifManifestHtml +
+    miradorHtml;
+
+  syncImageModalFilterVisibility();
+  requestImageModalCaptionIfMissing();
 }
 
 function setImageModalVisibility(isOpen) {
@@ -1467,6 +2073,9 @@ function openImageModal(payload = {}) {
   clearHighlightForModalTrigger(normalized.triggerEl);
   applyImageModalPayload(normalized, { updateTriggerEl: true });
   suppressMapToImageHighlightUntilPointerMove();
+  setImageModalFilterVisibility(false);
+  resetImageModalZoom();
+  resetImageModalFilters();
 
   renderImageModalContent();
   rebuildImageModalSequence(normalized);
@@ -1484,17 +2093,27 @@ function closeImageModal() {
 
   endImageModalDrag(null, false);
   endImageModalResize(null, false);
+  endImageModalPan(null);
 
   setImageModalVisibility(false);
 
   if (imageModalState.imgEl) imageModalState.imgEl.removeAttribute('src');
+  if (imageModalState.imgEl) imageModalState.imgEl.style.removeProperty('filter');
 
   const focusTarget = imageModalState.triggerEl;
   imageModalState.imageUrl = '';
   imageModalState.imageUrn = '';
   imageModalState.contextUrn = '';
+  imageModalState.imageCaption = '';
+  imageModalState.lunaLandingUrl = '';
+  imageModalState.iiifManifestUrl = '';
+  imageModalState.iiifImageUrl = '';
+  imageModalState.activeDisplayImageUrl = '';
+  setImageModalFilterVisibility(false);
+  resetImageModalFilters();
   imageModalState.triggerEl = null;
   imageModalState.ignoreOpenClickUntil = 0;
+  imageModalState.captionRequestToken += 1;
 
   suppressMapToImageHighlightUntilPointerMove();
 
@@ -1510,6 +2129,8 @@ function initImageModalEvents() {
   ensureImageModalInitialized();
   bindImageModalDragEvents();
   bindImageModalResizeEvents();
+  bindImageModalZoomEvents();
+  bindImageModalFilterEvents();
   setImageModalVisibility(false);
   if (imageModalState.eventsBound) return;
   imageModalState.eventsBound = true;
@@ -1546,6 +2167,28 @@ function initImageModalEvents() {
     }
   });
 
+  if (imageModalState.infoEl) {
+    imageModalState.infoEl.addEventListener('click', e => {
+      const navBtn = e.target.closest('[data-image-modal-navigate]');
+      if (!navBtn) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const urn = String(navBtn.dataset.imageModalNavigate || '');
+      if (!urn) return;
+      navigate(extractShortId(urn));
+    });
+  }
+
+  if (imageModalState.filterToggleBtnEl) {
+    imageModalState.filterToggleBtnEl.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      setImageModalFilterVisibility(!imageModalState.filtersVisible);
+    });
+  }
+
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && imageModalState.isOpen) {
       e.preventDefault();
@@ -1565,6 +2208,25 @@ function initImageModalEvents() {
       if (imageModalDragState.isDragging || imageModalResizeState.isResizing) return;
       e.preventDefault();
       stepImageModalSequence(e.key === 'ArrowLeft' ? -1 : 1);
+      return;
+    }
+
+    if (imageModalState.isOpen && (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_' || e.key === '0')) {
+      if (imageModalDragState.isDragging || imageModalResizeState.isResizing) return;
+      if (e.key === '+' || e.key === '=') {
+        e.preventDefault();
+        zoomImageModalBy(IMAGE_MODAL_ZOOM_STEP);
+        return;
+      }
+      if (e.key === '-' || e.key === '_') {
+        e.preventDefault();
+        zoomImageModalBy(1 / IMAGE_MODAL_ZOOM_STEP);
+        return;
+      }
+      if (e.key === '0') {
+        e.preventDefault();
+        resetImageModalZoom();
+      }
     }
   });
 }
@@ -1588,6 +2250,7 @@ function wireImageModalOpenEvents(containerEl) {
         imageUrl,
         imageUrn: el.dataset.imageUrn || el.dataset.entityUrn || '',
         contextUrn: el.dataset.featureUrn || el.dataset.entityUrn || '',
+        imageCaption: el.dataset.imageCaption || '',
         triggerEl: el,
       });
     });
@@ -2343,8 +3006,10 @@ function renderImages(images, el) {
 
   // Build feature URN lookup before resolving URLs (resolveImageUrl discards the feature field)
   const featureByUrn = new Map();
+  const captionByUrn = new Map();
   for (const img of images) {
     if (img && img.urn && img.feature) featureByUrn.set(img.urn, img.feature);
+    if (img && img.urn) captionByUrn.set(img.urn, normalizeImageModalCaption(img.l_description || img.x_luna_description || ''));
   }
 
   Promise.all(images.map(resolveImageUrl)).then(results => {
@@ -2358,13 +3023,15 @@ function renderImages(images, el) {
     for (const { urn, url } of valid) {
       const short = extractShortId(urn);
       const featureUrn = featureByUrn.get(urn) || '';
+      const caption = captionByUrn.get(urn) || '';
       const featureAttr = featureUrn ? ` data-feature-urn="${escAttr(featureUrn)}"` : '';
+      const captionAttr = caption ? ` data-image-caption="${escAttr(caption)}"` : '';
       if (url) {
-        html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer" data-image-url="${escAttr(url)}" data-image-urn="${escAttr(urn)}"${featureAttr}>` +
+        html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer" data-image-url="${escAttr(url)}" data-image-urn="${escAttr(urn)}"${featureAttr}${captionAttr}>` +
                 `<img src="${escAttr(url)}" alt="${escAttr(short)}" title="${escAttr(short)}" loading="lazy">` +
                 `</a>`;
       } else {
-        html += `<div class="image-urn-fallback"${featureAttr} title="${escAttr(urn)}">${escHtml(short)}</div>`;
+        html += `<div class="image-urn-fallback"${featureAttr}${captionAttr} title="${escAttr(urn)}">${escHtml(short)}</div>`;
       }
     }
     html += '</div>';
@@ -2381,21 +3048,28 @@ function wireImageHoverEvents(containerEl) {
     if (urn) registerFirstImageAssociation(urn, el);
 
     el.addEventListener('mouseenter', e => {
-      beginImageTileHighlight(el);
-      syncOpenImageModalFromElement(el, urn);
-      paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: shouldPanFromEvent(e), source: 'image' });
+      const shouldPan = shouldPanFromEvent(e);
+      scheduleImageHoverIntent(el, () => {
+        if (!el.matches(':hover')) return;
+        beginImageTileHighlight(el);
+        syncOpenImageModalFromElement(el, urn);
+        paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan, source: 'image' });
+      });
     });
     el.addEventListener('mouseleave', () => {
+      cancelImageHoverIntent(el);
       endImageTileHighlight(el);
       paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn });
     });
     el.addEventListener('focus', () => {
+      cancelImageHoverIntent(el);
       if (shouldSuppressImageFocusHighlight(el)) return;
       beginImageTileHighlight(el);
       syncOpenImageModalFromElement(el, urn);
       paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: isPanModifierDown(), source: 'image' });
     });
     el.addEventListener('blur', () => {
+      cancelImageHoverIntent(el);
       endImageTileHighlight(el);
       paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn });
     });
@@ -2436,6 +3110,7 @@ function wireSpatialImageHoverEvents(containerEl) {
   containerEl.querySelectorAll('[data-feature-urn]').forEach(el => {
     const featureUrn = el.dataset.featureUrn;
     let resolvedUrn = null;
+    let hoverIntentToken = 0;
     const buildTokenAtBind = imageAssociationBuildToken;
 
     registerFirstImageAssociation(featureUrn, el);
@@ -2445,31 +3120,47 @@ function wireSpatialImageHoverEvents(containerEl) {
       registerFirstImageAssociation(layerUrn, el);
     });
 
-    el.addEventListener('mouseenter', async e => {
+    el.addEventListener('mouseenter', e => {
       const shouldPan = shouldPanFromEvent(e);
-      beginImageTileHighlight(el);
-      resolvedUrn = await resolveFeatureToLayer(featureUrn);
-      if (resolvedUrn && el.matches(':hover')) {
-        syncOpenImageModalFromElement(el, resolvedUrn);
-        paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: resolvedUrn, shouldPan, source: 'image' });
-      }
+      const token = ++hoverIntentToken;
+      scheduleImageHoverIntent(el, async () => {
+        if (token !== hoverIntentToken) return;
+        if (!el.matches(':hover')) return;
+        beginImageTileHighlight(el);
+        resolvedUrn = await resolveFeatureToLayer(featureUrn);
+        if (token !== hoverIntentToken) return;
+        if (resolvedUrn && el.matches(':hover')) {
+          syncOpenImageModalFromElement(el, resolvedUrn);
+          paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: resolvedUrn, shouldPan, source: 'image' });
+        }
+      });
     });
     el.addEventListener('mouseleave', () => {
+      hoverIntentToken += 1;
+      cancelImageHoverIntent(el);
       endImageTileHighlight(el);
       if (resolvedUrn) paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn: resolvedUrn });
+      resolvedUrn = null;
     });
     el.addEventListener('focus', async () => {
+      hoverIntentToken += 1;
+      cancelImageHoverIntent(el);
       if (shouldSuppressImageFocusHighlight(el)) return;
       beginImageTileHighlight(el);
+      const token = hoverIntentToken;
       resolvedUrn = await resolveFeatureToLayer(featureUrn);
+      if (token !== hoverIntentToken) return;
       if (resolvedUrn && document.activeElement === el) {
         syncOpenImageModalFromElement(el, resolvedUrn);
         paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: resolvedUrn, shouldPan: isPanModifierDown(), source: 'image' });
       }
     });
     el.addEventListener('blur', () => {
+      hoverIntentToken += 1;
+      cancelImageHoverIntent(el);
       endImageTileHighlight(el);
       if (resolvedUrn) paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn: resolvedUrn });
+      resolvedUrn = null;
     });
   });
 }
@@ -2486,14 +3177,17 @@ function renderConceptImages(depictedItems, el) {
   let html = '<div class="image-grid">';
   for (const item of items) {
     const entityUrn = item.urn || '';
+    const imageUrn = item.best_image || entityUrn;
     const url       = item.l_img_url || null;
-    const short     = extractShortId(entityUrn);
+    const short     = extractShortId(imageUrn || entityUrn);
+    const caption   = normalizeImageModalCaption(item.l_description || item.x_luna_description || '');
+    const captionAttr = caption ? ` data-image-caption="${escAttr(caption)}"` : '';
     if (url) {
-      html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer" data-image-url="${escAttr(url)}" data-image-urn="${escAttr(entityUrn)}" data-entity-urn="${escAttr(entityUrn)}">` +
+      html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer" data-image-url="${escAttr(url)}" data-image-urn="${escAttr(imageUrn)}" data-entity-urn="${escAttr(entityUrn)}"${captionAttr}>` +
               `<img src="${escAttr(url)}" alt="${escAttr(short)}" title="${escAttr(short)}" loading="lazy">` +
               `</a>`;
     } else if (entityUrn) {
-      html += `<div class="image-urn-fallback" data-entity-urn="${escAttr(entityUrn)}" title="${escAttr(entityUrn)}">${escHtml(short)}</div>`;
+      html += `<div class="image-urn-fallback" data-image-urn="${escAttr(imageUrn)}" data-entity-urn="${escAttr(entityUrn)}"${captionAttr} title="${escAttr(entityUrn)}">${escHtml(short)}</div>`;
     }
   }
   html += '</div>';
