@@ -342,6 +342,7 @@ body.has-image-modal {
   align-items: center;
   gap: 0.2rem;
   max-width: 12rem;
+  position: relative;
   border: 1px solid #cfdbcf;
   border-radius: 999px;
   background: #f0f6f0;
@@ -355,6 +356,7 @@ body.has-image-modal {
 }
 
 .info-action-chip-label {
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -375,6 +377,17 @@ body.has-image-modal {
   box-shadow: 0 1px 5px rgb(23 68 46 / 14%);
   transform: translateY(-1px);
   outline: none;
+}
+
+.info-depicted-entity-chip.is-loading {
+  animation: info-chip-loading-pulse 0.95s ease-in-out infinite;
+}
+
+.info-depicted-entity-chip.is-map-preview-active {
+  border-color: #6aa384;
+  background: #dcecdf;
+  color: #113624;
+  box-shadow: 0 0 0 1px rgb(106 163 132 / 16%), 0 1px 5px rgb(17 54 36 / 14%);
 }
 
 #info-content table {
@@ -1071,6 +1084,17 @@ button.hierarchy-node:focus-visible {
   50%       { opacity: 0.4; }
 }
 
+@keyframes info-chip-loading-pulse {
+  0%, 100% {
+    transform: translateY(-1px) scale(1);
+    box-shadow: 0 0 0 0 rgb(86 145 110 / 0%);
+  }
+  50% {
+    transform: translateY(-1px) scale(1.03);
+    box-shadow: 0 0 0 6px rgb(86 145 110 / 12%);
+  }
+}
+
 @keyframes map-focus-hint-fade {
   0% {
     opacity: 0;
@@ -1103,6 +1127,14 @@ button.hierarchy-node:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .info-depicted-entity-chip {
+    transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
+  }
+
+  .info-depicted-entity-chip.is-loading {
+    animation: none;
+  }
+
   .image-grid a,
   .image-urn-fallback {
     transition: border-color 0.12s ease, box-shadow 0.12s ease;

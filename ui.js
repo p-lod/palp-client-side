@@ -31,6 +31,7 @@ const PREDICATE_LABELS = {
   'urn:p-lod:id:wiki-it-url':   'Wikipedia (IT)',
   'urn:p-lod:id:pleiades-url':  'Pleiades',
   'urn:p-lod:id:getty-lod-url': 'Getty LOD',
+  'urn:p-lod:id:has-pompeian-wall-painting-style': 'Wall-painting Style'
 };
 
 // Predicates omitted from the info table (handled separately or not display-useful)
@@ -67,6 +68,7 @@ const TYPEAHEAD_MAX_SUGGESTIONS = 64;
 const TYPEAHEAD_DEBOUNCE_MS = 120;
 const TYPEAHEAD_CACHE_MS = 5 * 60 * 1000;
 const IMAGE_HOVER_INTENT_DELAY_MS = 180;
+const INFO_CHIP_PREVIEW_CLEAR_DELAY_MS = 320;
 const LUNA_BASE_URL = 'https://umassamherst.lunaimaging.com';
 const IMAGE_MODAL_CAPTION_PREDICATE = 'urn:p-lod:id:x-luna-description';
 const LUNA_RECORD_ID_PREDICATE = 'urn:p-lod:id:x-luna-record-id';
@@ -283,24 +285,41 @@ function renderActionableInfoEntityRow(config) {
   );
 }
 
-function bindInfoActionableEntityHoverEvents(el, selector, urnAttrName) {
+function bindInfoChipPreviewState(chip, { isLoading = false, isActive = false } = {}) {
+  if (!chip) return;
+  chip.classList.toggle('is-loading', !!isLoading);
+  chip.classList.toggle('is-map-preview-active', !!isActive);
+  if (isLoading) {
+    chip.setAttribute('aria-busy', 'true');
+  } else {
+    chip.removeAttribute('aria-busy');
+  }
+}
+
+function bindInfoActionableEntityHoverEvents(el, selector, urnAttrName, options = {}) {
+  const { onHoverStart = null, onHoverEnd = null } = options;
+
   el.querySelectorAll(selector).forEach(chip => {
     const urn = chip.getAttribute(urnAttrName);
     if (!urn) return;
 
     chip.addEventListener('mouseenter', () => {
+      if (typeof onHoverStart === 'function') onHoverStart({ chip, urn });
       paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: false, source: 'info' });
     });
 
     chip.addEventListener('mouseleave', () => {
+      if (typeof onHoverEnd === 'function') onHoverEnd({ chip, urn });
       paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn, source: 'info' });
     });
 
     chip.addEventListener('focus', () => {
+      if (typeof onHoverStart === 'function') onHoverStart({ chip, urn });
       paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: false, source: 'info' });
     });
 
     chip.addEventListener('blur', () => {
+      if (typeof onHoverEnd === 'function') onHoverEnd({ chip, urn });
       paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn, source: 'info' });
     });
   });
@@ -318,14 +337,8 @@ async function fetchDepictsConcepts(shortId) {
 }
 
 async function fetchDepictedWhereForInfo(shortId) {
-  try {
-    const r = await fetch(`${API_BASE}/depicted-where/${encodeURIComponent(shortId)}`);
-    if (!r.ok) return [];
-    const payload = await r.json();
-    return Array.isArray(payload) ? payload : [];
-  } catch (_) {
-    return [];
-  }
+  const payload = await fetchDepictedWhereByDetail(shortId, 'space');
+  return Array.isArray(payload) ? payload : [];
 }
 
 function isHttpUrl(val) {
@@ -863,6 +876,13 @@ let hierarchyState = null;
 let hierarchyPreviewLayer = null;
 let hierarchyPreviewUrn = null;
 let hierarchyPreviewRequestToken = 0;
+let infoChipPreviewLayer = null;
+let infoChipPreviewUrn = null;
+let infoChipPreviewRequestToken = 0;
+let infoChipPreviewClearTimeoutId = null;
+let activeInfoChipPreviewChipEl = null;
+let infoChipPreviewGeoJsonCache = new Map();
+let pendingInfoChipPreviewGeoJsonByUrn = new Map();
 let suppressMapToImageHighlight = false;
 let imageHoverIntentTimeoutByEl = new WeakMap();
 const imageModalState = {
@@ -998,6 +1018,14 @@ const HIERARCHY_PREVIEW_STYLE = Object.freeze({
   weight: 5,
   fillColor: '#ffcc00',
   fillOpacity: 0.16,
+  opacity: 1,
+});
+
+const INFO_CHIP_PREVIEW_STYLE = Object.freeze({
+  color: '#1f7a58',
+  weight: 4,
+  fillColor: '#4cc38a',
+  fillOpacity: 0.28,
   opacity: 1,
 });
 
@@ -2688,6 +2716,7 @@ function initMapUrlSync() {
 function clearMapLayers() {
   cancelAllAttentionPulses();
   clearHierarchyPreview();
+  clearInfoChipMapPreview({ clearChipState: true, clearCache: true });
   if (mapFocusHintTimeoutId) {
     clearTimeout(mapFocusHintTimeoutId);
     mapFocusHintTimeoutId = null;
@@ -2702,6 +2731,121 @@ function clearMapLayers() {
   pendingAncestorOutlineLayerByUrn.clear();
   activeAncestorOutlineUrn = null;
   currentHoveredEntityUrn = null;
+}
+
+function clearInfoChipPreviewClearTimeout() {
+  if (!infoChipPreviewClearTimeoutId) return;
+  clearTimeout(infoChipPreviewClearTimeoutId);
+  infoChipPreviewClearTimeoutId = null;
+}
+
+function clearInfoChipMapPreviewLayer() {
+  if (infoChipPreviewLayer && layerGroup && layerGroup.hasLayer(infoChipPreviewLayer)) {
+    layerGroup.removeLayer(infoChipPreviewLayer);
+  }
+  infoChipPreviewLayer = null;
+  infoChipPreviewUrn = null;
+}
+
+function clearInfoChipMapPreview(options = {}) {
+  const { clearChipState = false, clearCache = false } = options;
+  infoChipPreviewRequestToken += 1;
+  clearInfoChipPreviewClearTimeout();
+  clearInfoChipMapPreviewLayer();
+
+  if (clearChipState && activeInfoChipPreviewChipEl) {
+    bindInfoChipPreviewState(activeInfoChipPreviewChipEl, { isLoading: false, isActive: false });
+    activeInfoChipPreviewChipEl = null;
+  }
+
+  if (clearCache) {
+    infoChipPreviewGeoJsonCache.clear();
+    pendingInfoChipPreviewGeoJsonByUrn.clear();
+  }
+}
+
+async function ensureInfoChipPreviewGeoJson(urn) {
+  if (!urn) return null;
+  if (infoChipPreviewGeoJsonCache.has(urn)) return infoChipPreviewGeoJsonCache.get(urn);
+  if (pendingInfoChipPreviewGeoJsonByUrn.has(urn)) return pendingInfoChipPreviewGeoJsonByUrn.get(urn);
+
+  const pending = (async () => {
+    try {
+      const shortId = extractShortId(urn);
+      const r = await fetch(`${API_BASE}/geojson/${encodeURIComponent(shortId)}`);
+      if (!r.ok) return null;
+
+      const payload = await r.json();
+      const geojson = payload && payload.geojson ? payload.geojson : payload;
+      infoChipPreviewGeoJsonCache.set(urn, geojson || null);
+      return geojson || null;
+    } catch (_) {
+      infoChipPreviewGeoJsonCache.set(urn, null);
+      return null;
+    } finally {
+      pendingInfoChipPreviewGeoJsonByUrn.delete(urn);
+    }
+  })();
+
+  pendingInfoChipPreviewGeoJsonByUrn.set(urn, pending);
+  return pending;
+}
+
+async function showInfoChipMapPreview(urn, chip) {
+  if (!urn || !chip || !leafletMap || !layerGroup) return;
+  if (currentResourceProfile !== 'spatial' && currentResourceProfile !== 'concept') return;
+
+  clearInfoChipPreviewClearTimeout();
+  const requestToken = ++infoChipPreviewRequestToken;
+
+  if (activeInfoChipPreviewChipEl && activeInfoChipPreviewChipEl !== chip) {
+    bindInfoChipPreviewState(activeInfoChipPreviewChipEl, { isLoading: false, isActive: false });
+  }
+  activeInfoChipPreviewChipEl = chip;
+
+  if (infoChipPreviewUrn === urn && infoChipPreviewLayer && layerGroup.hasLayer(infoChipPreviewLayer)) {
+    bindInfoChipPreviewState(chip, { isLoading: false, isActive: true });
+    infoChipPreviewLayer.bringToFront();
+    return;
+  }
+
+  clearInfoChipMapPreviewLayer();
+  bindInfoChipPreviewState(chip, { isLoading: true, isActive: false });
+
+  const geojsonData = await ensureInfoChipPreviewGeoJson(urn);
+  if (requestToken !== infoChipPreviewRequestToken) return;
+  if (activeInfoChipPreviewChipEl !== chip) return;
+
+  const parsed = parseGeoJson(geojsonData);
+  if (!parsed || !layerGroup) {
+    bindInfoChipPreviewState(chip, { isLoading: false, isActive: false });
+    return;
+  }
+
+  infoChipPreviewLayer = L.geoJSON(parsed, {
+    style: { ...INFO_CHIP_PREVIEW_STYLE, className: 'plod-info-chip-preview' },
+    interactive: false,
+  }).addTo(layerGroup);
+  infoChipPreviewLayer.bringToFront();
+  infoChipPreviewUrn = urn;
+
+  bindInfoChipPreviewState(chip, { isLoading: false, isActive: true });
+}
+
+function scheduleInfoChipMapPreviewClear(urn, chip) {
+  if (chip) {
+    bindInfoChipPreviewState(chip, { isLoading: false, isActive: false });
+    if (activeInfoChipPreviewChipEl === chip) activeInfoChipPreviewChipEl = null;
+  }
+
+  clearInfoChipPreviewClearTimeout();
+  const requestToken = ++infoChipPreviewRequestToken;
+  infoChipPreviewClearTimeoutId = setTimeout(() => {
+    infoChipPreviewClearTimeoutId = null;
+    if (requestToken !== infoChipPreviewRequestToken) return;
+    if (infoChipPreviewUrn !== urn) return;
+    clearInfoChipMapPreviewLayer();
+  }, INFO_CHIP_PREVIEW_CLEAR_DELAY_MS);
 }
 
 async function resolveAncestorForEntity(entityUrn) {
@@ -3245,8 +3389,36 @@ async function renderInfo(triples, el, shortId = '', resourceProfile = 'default'
     });
   });
 
-  bindInfoActionableEntityHoverEvents(el, '[data-depicted-concept-urn]', 'data-depicted-concept-urn');
-  bindInfoActionableEntityHoverEvents(el, '[data-depicted-where-urn]', 'data-depicted-where-urn');
+  bindInfoActionableEntityHoverEvents(
+    el,
+    '[data-depicted-concept-urn]',
+    'data-depicted-concept-urn',
+    resourceProfile === 'spatial'
+      ? {
+          onHoverStart: ({ chip, urn }) => {
+            void showInfoChipMapPreview(urn, chip);
+          },
+          onHoverEnd: ({ chip, urn }) => {
+            scheduleInfoChipMapPreviewClear(urn, chip);
+          },
+        }
+      : {}
+  );
+  bindInfoActionableEntityHoverEvents(
+    el,
+    '[data-depicted-where-urn]',
+    'data-depicted-where-urn',
+    resourceProfile === 'concept'
+      ? {
+          onHoverStart: ({ chip, urn }) => {
+            void showInfoChipMapPreview(urn, chip);
+          },
+          onHoverEnd: ({ chip, urn }) => {
+            scheduleInfoChipMapPreviewClear(urn, chip);
+          },
+        }
+      : {}
+  );
 }
 
 // ── Panel: Images ─────────────────────────────────────────────────────────────
@@ -3636,7 +3808,7 @@ function initMapHoverListeners() {
   });
 
   paneEvents.on(PANE_EVENT_ENTITY_HIGHLIGHT, ({ urn, source }) => {
-    if (source !== 'map') return;
+    if (source !== 'map' && source !== 'info') return;
     if (suppressMapToImageHighlight) return;
     const imageEl = highlightAndScrollToFirstAssociatedImage(urn);
     if (!imageEl) return;
@@ -3644,7 +3816,7 @@ function initMapHoverListeners() {
   });
 
   paneEvents.on(PANE_EVENT_ENTITY_CLEAR, ({ source }) => {
-    if (source !== 'map') return;
+    if (source !== 'map' && source !== 'info') return;
     clearActiveMapHoverImage();
   });
 }
