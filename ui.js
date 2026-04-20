@@ -36,10 +36,30 @@ const PREDICATE_LABELS = {
 // Predicates omitted from the info table (handled separately or not display-useful)
 const SKIP_PREDICATES = new Set([
   'http://www.w3.org/2000/01/rdf-schema#label',
+  'http://www.w3.org/2000/01/rdf-schema#isDefinedBy',
   'http://www.w3.org/1999/02/22-rdf-syntax-ns#type',
+  'urn:p-lod:id:broader' ,
+  'urn:p-lod:id:spatially-within' ,
   'urn:p-lod:id:geojson',
   'urn:p-lod:id:best-image',
+  'urn:p-lod:id:sort-order-label',
+  'urn:p-lod:id:x-source',
+  'urn:p-lod:id:identifier',
+  'urn:p-lod:id:arcgis-id',
+  'urn:p-lod:id:surface-area'
 ]);
+
+const EXTERNAL_LINK_PREDICATE_META = Object.freeze({
+  'urn:p-lod:id:pleiades-url': { icon: 'PL', label: 'Pleiades' },
+  'urn:p-lod:id:wikidata-url': { icon: 'WD', label: 'Wikidata' },
+  'urn:p-lod:id:wiki-en-url': { icon: 'WEN', label: 'Wikipedia (EN)' },
+  'urn:p-lod:id:en-wiki-url': { icon: 'WEN', label: 'Wikipedia (EN)' },
+  'urn:p-lod:id:wiki-it-url': { icon: 'WIT', label: 'Wikipedia (IT)' },
+  'urn:p-lod:id:p-in-p-url': { icon: 'PIP', label: 'Pompeii in Pictures' },
+  'urn:p-lod:id:getty-lod-url': { icon: 'GL', label: 'Getty LOD' },
+});
+
+const DEFAULT_EXTERNAL_LINK_ICON = 'EXT';
 
 const TYPEAHEAD_SOURCE_TYPES = ['concept', 'region', 'insula', 'property'];
 const TYPEAHEAD_SHOW_ID_TYPES = new Set(['region', 'insula', 'property']);
@@ -144,6 +164,170 @@ function humanizePredicate(uri) {
   return uri;
 }
 
+function getPredicateTail(uri) {
+  const m = String(uri).match(/[#/]([^#/]+)$/);
+  return m ? m[1] : String(uri);
+}
+
+function isExternalLinkPredicate(predicate) {
+  if (EXTERNAL_LINK_PREDICATE_META[predicate]) return true;
+  return /(?:-|_)url$/i.test(getPredicateTail(predicate));
+}
+
+function getExternalLinkMeta(predicate) {
+  const explicit = EXTERNAL_LINK_PREDICATE_META[predicate];
+  if (explicit) return explicit;
+  return {
+    icon: DEFAULT_EXTERNAL_LINK_ICON,
+    label: humanizePredicate(predicate),
+  };
+}
+
+function collectExternalLinks(triples) {
+  const links = [];
+  const seen = new Set();
+
+  for (const [predicate, vals] of Object.entries(triples || {})) {
+    if (!isExternalLinkPredicate(predicate)) continue;
+    for (const val of vals || []) {
+      if (!isHttpUrl(val)) continue;
+      const url = String(val);
+      const dedupeKey = `${predicate}::${url}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+
+      const meta = getExternalLinkMeta(predicate);
+      links.push({
+        predicate,
+        url,
+        icon: meta.icon,
+        label: meta.label,
+        title: `${meta.label}: ${url}`,
+      });
+    }
+  }
+
+  return links;
+}
+
+function isDisplayLabelUsable(label) {
+  const text = String(label || '').trim();
+  return !!text && text.toLowerCase() !== 'none';
+}
+
+function normalizeRelatedEntityItem(item) {
+  if (!item || !item.urn) return null;
+
+  const urn = String(item.urn);
+  const fallbackLabel = extractShortId(urn);
+  const label = isDisplayLabelUsable(item.label)
+    ? String(item.label).trim()
+    : fallbackLabel;
+
+  const within = String(item.within || '').startsWith('urn:p-lod:id:')
+    ? extractShortId(item.within)
+    : '';
+
+  return {
+    urn,
+    label,
+    shortId: fallbackLabel,
+    within,
+  };
+}
+
+function normalizeUniqueRelatedEntityItems(items) {
+  const normalized = [];
+  const seen = new Set();
+
+  for (const item of items || []) {
+    const entry = normalizeRelatedEntityItem(item);
+    if (!entry || seen.has(entry.urn)) continue;
+    seen.add(entry.urn);
+    normalized.push(entry);
+  }
+
+  return normalized;
+}
+
+function renderActionableInfoEntityRow(config) {
+  const {
+    rowClass,
+    labelClass,
+    listClass,
+    itemClass,
+    sectionLabel,
+    dataUrnAttribute,
+    items,
+  } = config;
+
+  if (!items.length) return '';
+
+  const chips = items.map(item => {
+    const withinMeta = item.within ? `<span class="info-action-chip-meta">${escHtml(item.within)}</span>` : '';
+    const titleBits = [item.label, item.shortId];
+    if (item.within) titleBits.push(`within ${item.within}`);
+    const title = `${sectionLabel}: ${titleBits.join(' • ')}`;
+    return (
+      `<button type="button" class="${itemClass}" data-navigate="${escAttr(item.shortId)}" ${dataUrnAttribute}="${escAttr(item.urn)}" title="${escAttr(title)}" aria-label="${escAttr(item.label)}">` +
+      `<span class="info-action-chip-label">${escHtml(item.label)}</span>${withinMeta}` +
+      '</button>'
+    );
+  }).join('');
+
+  return (
+    `<div class="${rowClass}">` +
+      `<span class="${labelClass}">${escHtml(sectionLabel)}</span>` +
+      `<span class="${listClass}">${chips}</span>` +
+    '</div>'
+  );
+}
+
+function bindInfoActionableEntityHoverEvents(el, selector, urnAttrName) {
+  el.querySelectorAll(selector).forEach(chip => {
+    const urn = chip.getAttribute(urnAttrName);
+    if (!urn) return;
+
+    chip.addEventListener('mouseenter', () => {
+      paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: false, source: 'info' });
+    });
+
+    chip.addEventListener('mouseleave', () => {
+      paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn, source: 'info' });
+    });
+
+    chip.addEventListener('focus', () => {
+      paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn, shouldPan: false, source: 'info' });
+    });
+
+    chip.addEventListener('blur', () => {
+      paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn, source: 'info' });
+    });
+  });
+}
+
+async function fetchDepictsConcepts(shortId) {
+  try {
+    const r = await fetch(`${API_BASE}/depicts-concepts/${encodeURIComponent(shortId)}`);
+    if (!r.ok) return [];
+    const payload = await r.json();
+    return Array.isArray(payload) ? payload : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function fetchDepictedWhereForInfo(shortId) {
+  try {
+    const r = await fetch(`${API_BASE}/depicted-where/${encodeURIComponent(shortId)}`);
+    if (!r.ok) return [];
+    const payload = await r.json();
+    return Array.isArray(payload) ? payload : [];
+  } catch (_) {
+    return [];
+  }
+}
+
 function isHttpUrl(val) {
   return typeof val === 'string' && /^https?:\/\//.test(val);
 }
@@ -209,6 +393,58 @@ function normalizeTypeaheadRecord(item, sourceType) {
     : null;
 
   return { shortId, label, type: itemType };
+}
+
+function getBestImageUrnsFromTriples(triples) {
+  const urns = [];
+  const seen = new Set();
+  const vals = (triples && triples['urn:p-lod:id:best-image']) || [];
+
+  for (const val of vals) {
+    const urn = String(val || '').trim();
+    if (!urn.startsWith('urn:p-lod:id:')) continue;
+    if (seen.has(urn)) continue;
+    seen.add(urn);
+    urns.push(urn);
+  }
+
+  return urns;
+}
+
+function getImageItemUrn(item) {
+  if (typeof item === 'string') return String(item || '').trim();
+  return String((item && item.urn) || '').trim();
+}
+
+function mergePriorityImages(bestImageUrns, imageItems, contextEntityUrn = '') {
+  const items = Array.isArray(imageItems) ? imageItems : [];
+  const result = [];
+  const seenUrns = new Set();
+
+  for (const bestUrn of (bestImageUrns || [])) {
+    const urn = String(bestUrn || '').trim();
+    if (!urn || seenUrns.has(urn)) continue;
+    seenUrns.add(urn);
+
+    const existing = items.find(item => getImageItemUrn(item) === urn);
+    if (existing) {
+      result.push(existing);
+    } else {
+      result.push({
+        urn,
+        entity: contextEntityUrn,
+      });
+    }
+  }
+
+  for (const item of items) {
+    const urn = getImageItemUrn(item);
+    if (!urn || seenUrns.has(urn)) continue;
+    seenUrns.add(urn);
+    result.push(item);
+  }
+
+  return result;
 }
 
 function addTypeaheadSuggestion(target, seenValues, value, shortId, type) {
@@ -2923,7 +3159,7 @@ function wireHierarchyInteractions(slotEl) {
 
 // ── Panel: Info ───────────────────────────────────────────────────────────────
 
-function renderInfo(triples, el) {
+async function renderInfo(triples, el, shortId = '', resourceProfile = 'default', entityUrn = '') {
   if (!el) return;
 
   if (!Object.keys(triples).length) {
@@ -2934,13 +3170,53 @@ function renderInfo(triples, el) {
   const label   = (triples['http://www.w3.org/2000/01/rdf-schema#label'] || [])[0] || '';
   const typeUrn = (triples['http://www.w3.org/1999/02/22-rdf-syntax-ns#type'] || [])[0] || '';
 
+  let depictedConceptItems = [];
+  let depictedWhereItems = [];
+
+  if (shortId && resourceProfile === 'spatial') {
+    depictedConceptItems = normalizeUniqueRelatedEntityItems(await fetchDepictsConcepts(shortId));
+  } else if (shortId && resourceProfile === 'concept') {
+    depictedWhereItems = normalizeUniqueRelatedEntityItems(await fetchDepictedWhereForInfo(shortId));
+  }
+
   let html = '';
   if (label)   html += `<p class="entity-title">${escHtml(label)}</p>`;
   if (typeUrn) html += `<p class="entity-type">${escHtml(extractShortId(typeUrn))}</p>`;
 
+  const externalLinks = collectExternalLinks(triples);
+  if (externalLinks.length) {
+    html += '<div class="info-external-links-row">' +
+      '<span class="info-external-links-label">Links</span>' +
+      '<span class="info-external-links">' +
+      externalLinks.map(link =>
+        `<a class="info-external-link" href="${escAttr(link.url)}" target="_blank" rel="noopener noreferrer" title="${escAttr(link.title)}" aria-label="${escAttr(link.label)}">${escHtml(link.icon)}</a>`
+      ).join('') +
+      '</span></div>';
+  }
+
+  html += renderActionableInfoEntityRow({
+    rowClass: 'info-depicted-concepts-row',
+    labelClass: 'info-depicted-concepts-label',
+    listClass: 'info-depicted-concepts',
+    itemClass: 'info-depicted-entity-chip info-concept-chip',
+    sectionLabel: 'Depicted concepts',
+    dataUrnAttribute: 'data-depicted-concept-urn',
+    items: depictedConceptItems,
+  });
+
+  html += renderActionableInfoEntityRow({
+    rowClass: 'info-depicted-where-row',
+    labelClass: 'info-depicted-where-label',
+    listClass: 'info-depicted-where',
+    itemClass: 'info-depicted-entity-chip info-location-chip',
+    sectionLabel: 'Depicted where',
+    dataUrnAttribute: 'data-depicted-where-urn',
+    items: depictedWhereItems,
+  });
+
   html += '<table><tbody>';
   for (const [pred, vals] of Object.entries(triples)) {
-    if (SKIP_PREDICATES.has(pred)) continue;
+    if (SKIP_PREDICATES.has(pred) || isExternalLinkPredicate(pred)) continue;
     const predLabel   = humanizePredicate(pred);
     const cellContent = vals.map(v => {
       if (isHttpUrl(v)) {
@@ -2956,6 +3232,9 @@ function renderInfo(triples, el) {
   }
   html += '</tbody></table>';
 
+  // Avoid stale async updates if the user navigated while relationship fetches were in flight.
+  if (entityUrn && document.getElementById('current-id')?.textContent !== entityUrn) return;
+
   el.innerHTML = html;
 
   // Wire internal P-LOD links to the router
@@ -2965,6 +3244,9 @@ function renderInfo(triples, el) {
       navigate(a.dataset.navigate);
     });
   });
+
+  bindInfoActionableEntityHoverEvents(el, '[data-depicted-concept-urn]', 'data-depicted-concept-urn');
+  bindInfoActionableEntityHoverEvents(el, '[data-depicted-where-urn]', 'data-depicted-where-urn');
 }
 
 // ── Panel: Images ─────────────────────────────────────────────────────────────
@@ -2994,7 +3276,7 @@ async function resolveImageUrl(imgDict) {
   return { urn, url: null };
 }
 
-function renderImages(images, el) {
+function renderImages(images, el, contextEntityUrn = '') {
   if (!el) return;
 
   if (!images || !images.length) {
@@ -3006,13 +3288,16 @@ function renderImages(images, el) {
 
   // Build feature URN lookup before resolving URLs (resolveImageUrl discards the feature field)
   const featureByUrn = new Map();
+  const entityByUrn = new Map();
   const captionByUrn = new Map();
   for (const img of images) {
     if (img && img.urn && img.feature) featureByUrn.set(img.urn, img.feature);
+    if (img && img.urn && img.entity) entityByUrn.set(img.urn, img.entity);
     if (img && img.urn) captionByUrn.set(img.urn, normalizeImageModalCaption(img.l_description || img.x_luna_description || ''));
   }
 
   Promise.all(images.map(resolveImageUrl)).then(results => {
+    if (contextEntityUrn && document.getElementById('current-id')?.textContent !== contextEntityUrn) return;
     const valid = results.filter(Boolean);
     if (!valid.length) {
       el.innerHTML = '<p class="placeholder">No images available.</p>';
@@ -3023,21 +3308,24 @@ function renderImages(images, el) {
     for (const { urn, url } of valid) {
       const short = extractShortId(urn);
       const featureUrn = featureByUrn.get(urn) || '';
+      const entityUrn = entityByUrn.get(urn) || contextEntityUrn;
       const caption = captionByUrn.get(urn) || '';
       const featureAttr = featureUrn ? ` data-feature-urn="${escAttr(featureUrn)}"` : '';
+      const entityAttr = entityUrn && !featureUrn ? ` data-entity-urn="${escAttr(entityUrn)}"` : '';
       const captionAttr = caption ? ` data-image-caption="${escAttr(caption)}"` : '';
       if (url) {
-        html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer" data-image-url="${escAttr(url)}" data-image-urn="${escAttr(urn)}"${featureAttr}${captionAttr}>` +
+        html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer" data-image-url="${escAttr(url)}" data-image-urn="${escAttr(urn)}"${featureAttr}${entityAttr}${captionAttr}>` +
                 `<img src="${escAttr(url)}" alt="${escAttr(short)}" title="${escAttr(short)}" loading="lazy">` +
                 `</a>`;
       } else {
-        html += `<div class="image-urn-fallback"${featureAttr}${captionAttr} title="${escAttr(urn)}">${escHtml(short)}</div>`;
+        html += `<div class="image-urn-fallback"${featureAttr}${entityAttr}${captionAttr} title="${escAttr(urn)}">${escHtml(short)}</div>`;
       }
     }
     html += '</div>';
     el.innerHTML = html;
     invalidateImageModalSequence();
     wireSpatialImageHoverEvents(el);
+    wireImageHoverEvents(el);
     wireImageModalOpenEvents(el);
   });
 }
@@ -3165,36 +3453,84 @@ function wireSpatialImageHoverEvents(containerEl) {
   });
 }
 
-function renderConceptImages(depictedItems, el) {
+function renderConceptImages(depictedItems, el, bestImageUrns = [], contextEntityUrn = '') {
   if (!el) return;
 
   const items = depictedItems || [];
-  if (!items.length) {
+  if (!items.length && !bestImageUrns.length) {
     el.innerHTML = '<p class="placeholder">No images available.</p>';
     return;
   }
 
-  let html = '<div class="image-grid">';
-  for (const item of items) {
-    const entityUrn = item.urn || '';
-    const imageUrn = item.best_image || entityUrn;
-    const url       = item.l_img_url || null;
-    const short     = extractShortId(imageUrn || entityUrn);
-    const caption   = normalizeImageModalCaption(item.l_description || item.x_luna_description || '');
-    const captionAttr = caption ? ` data-image-caption="${escAttr(caption)}"` : '';
-    if (url) {
-      html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer" data-image-url="${escAttr(url)}" data-image-urn="${escAttr(imageUrn)}" data-entity-urn="${escAttr(entityUrn)}"${captionAttr}>` +
-              `<img src="${escAttr(url)}" alt="${escAttr(short)}" title="${escAttr(short)}" loading="lazy">` +
-              `</a>`;
-    } else if (entityUrn) {
-      html += `<div class="image-urn-fallback" data-image-urn="${escAttr(imageUrn)}" data-entity-urn="${escAttr(entityUrn)}"${captionAttr} title="${escAttr(entityUrn)}">${escHtml(short)}</div>`;
-    }
+  el.innerHTML = '<p class="loading">Loading images…</p>';
+
+  const cards = [];
+  const seenImageUrns = new Set();
+
+  for (const imageUrn of bestImageUrns) {
+    const urn = String(imageUrn || '').trim();
+    if (!urn || seenImageUrns.has(urn)) continue;
+    seenImageUrns.add(urn);
+
+    const matchingItem = items.find(item => {
+      const itemImageUrn = String(item.best_image || item.urn || '').trim();
+      return itemImageUrn === urn;
+    });
+
+    cards.push({
+      imageUrn: urn,
+      entityUrn: String((matchingItem && matchingItem.urn) || contextEntityUrn || '').trim(),
+      url: matchingItem ? (matchingItem.l_img_url || null) : null,
+      caption: normalizeImageModalCaption((matchingItem && (matchingItem.l_description || matchingItem.x_luna_description)) || ''),
+    });
   }
-  html += '</div>';
-  el.innerHTML = html;
-  invalidateImageModalSequence();
-  wireImageHoverEvents(el);
-  wireImageModalOpenEvents(el);
+
+  for (const item of items) {
+    const entityUrn = String(item.urn || '').trim();
+    const imageUrn = String(item.best_image || entityUrn).trim();
+    if (!imageUrn || seenImageUrns.has(imageUrn)) continue;
+    seenImageUrns.add(imageUrn);
+
+    cards.push({
+      imageUrn,
+      entityUrn,
+      url: item.l_img_url || null,
+      caption: normalizeImageModalCaption(item.l_description || item.x_luna_description || ''),
+    });
+  }
+
+  Promise.all(cards.map(async card => {
+    if (card.url) return card;
+    const resolved = await resolveImageUrl(card.imageUrn);
+    return {
+      ...card,
+      url: (resolved && resolved.url) || null,
+    };
+  })).then(resolvedCards => {
+    if (contextEntityUrn && document.getElementById('current-id')?.textContent !== contextEntityUrn) return;
+
+    let html = '<div class="image-grid">';
+    for (const card of resolvedCards) {
+      const imageUrn = card.imageUrn;
+      const entityUrn = card.entityUrn || contextEntityUrn;
+      const short = extractShortId(imageUrn || entityUrn);
+      const captionAttr = card.caption ? ` data-image-caption="${escAttr(card.caption)}"` : '';
+      const entityAttr = entityUrn ? ` data-entity-urn="${escAttr(entityUrn)}"` : '';
+
+      if (card.url) {
+        html += `<a href="${escAttr(card.url)}" target="_blank" rel="noopener noreferrer" data-image-url="${escAttr(card.url)}" data-image-urn="${escAttr(imageUrn)}"${entityAttr}${captionAttr}>` +
+                `<img src="${escAttr(card.url)}" alt="${escAttr(short)}" title="${escAttr(short)}" loading="lazy">` +
+                `</a>`;
+      } else {
+        html += `<div class="image-urn-fallback" data-image-urn="${escAttr(imageUrn)}"${entityAttr}${captionAttr} title="${escAttr(imageUrn || entityUrn)}">${escHtml(short)}</div>`;
+      }
+    }
+    html += '</div>';
+    el.innerHTML = html;
+    invalidateImageModalSequence();
+    wireImageHoverEvents(el);
+    wireImageModalOpenEvents(el);
+  });
 }
 
 // ── Panel: Map ────────────────────────────────────────────────────────────────
@@ -3426,6 +3762,7 @@ async function loadEntity(rawId) {
 
   const typeUrn   = (triples['http://www.w3.org/1999/02/22-rdf-syntax-ns#type'] || [])[0] || '';
   const label     = (triples['http://www.w3.org/2000/01/rdf-schema#label'] || [])[0] || shortId;
+  const bestImageUrns = getBestImageUrnsFromTriples(triples);
   const isSpatial = SPATIAL_TYPES.has(typeUrn);
   const selfGjStr = (triples['urn:p-lod:id:geojson'] || [])[0] || null;
 
@@ -3433,7 +3770,13 @@ async function loadEntity(rawId) {
   currentResourceProfile = resolved.profile;
   applyPaneLayout(resolved.layout);
 
-  renderInfo(triples, getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.INFO));
+  void renderInfo(
+    triples,
+    getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.INFO),
+    shortId,
+    currentResourceProfile,
+    id
+  );
   renderHierarchyPlaceholder(
     getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER),
     currentResourceProfile
@@ -3476,14 +3819,22 @@ async function loadEntity(rawId) {
   }
 
   if (isSpatial) {
-    renderImages(
+    const mergedImages = mergePriorityImages(
+      bestImageUrns,
       imagesRes.status === 'fulfilled' ? imagesRes.value : [],
-      getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES)
+      id
+    );
+    renderImages(
+      mergedImages,
+      getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES),
+      id
     );
   } else {
     renderConceptImages(
       childItems,
-      getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES)
+      getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES),
+      bestImageUrns,
+      id
     );
   }
 
