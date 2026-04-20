@@ -31,7 +31,8 @@ const PREDICATE_LABELS = {
   'urn:p-lod:id:wiki-it-url':   'Wikipedia (IT)',
   'urn:p-lod:id:pleiades-url':  'Pleiades',
   'urn:p-lod:id:getty-lod-url': 'Getty LOD',
-  'urn:p-lod:id:has-pompeian-wall-painting-style': 'Wall-painting Style'
+  'urn:p-lod:id:has-pompeian-wall-painting-style': 'Wall-painting Style',
+  'urn:p-lod:id:has-space-characterization': "Space characterization",
 };
 
 // Predicates omitted from the info table (handled separately or not display-useful)
