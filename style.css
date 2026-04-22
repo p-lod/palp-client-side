@@ -337,6 +337,24 @@ body.has-image-modal {
   min-width: 0;
 }
 
+.info-chip-section-loading {
+  display: inline-flex;
+  align-items: center;
+  color: #a8a096;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 0;
+}
+
+.info-entity-chip-shell {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  max-width: 14rem;
+}
+
 .info-depicted-entity-chip {
   display: inline-flex;
   align-items: center;
@@ -353,6 +371,25 @@ body.has-image-modal {
   padding: 0.28rem 0.5rem;
   cursor: pointer;
   transition: background-color 130ms ease, border-color 130ms ease, color 130ms ease, box-shadow 130ms ease, transform 130ms ease;
+}
+
+.info-entity-chip-shell .info-depicted-entity-chip {
+  max-width: 12rem;
+}
+
+.info-entity-chip-shell.has-pin-toggle .info-depicted-entity-chip {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right-color: transparent;
+  padding-right: 0.38rem;
+}
+
+.info-entity-chip-shell.has-pin-toggle.is-pinned .info-depicted-entity-chip {
+  border-color: #5f98bd;
+  border-right-color: transparent;
+  background: #dfedf7;
+  color: #155d88;
+  box-shadow: 0 0 0 1px rgb(21 93 136 / 12%), 0 1px 5px rgb(21 93 136 / 14%);
 }
 
 .info-action-chip-label {
@@ -388,6 +425,138 @@ body.has-image-modal {
   background: #dcecdf;
   color: #113624;
   box-shadow: 0 0 0 1px rgb(106 163 132 / 16%), 0 1px 5px rgb(17 54 36 / 14%);
+}
+
+.map-pin-toggle {
+  width: 1.45rem;
+  height: 1.45rem;
+  padding: 0;
+  border: 1px solid #d8c8b4;
+  border-radius: 6px;
+  background: #fffdf8;
+  color: #7a5b3b;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 130ms ease, border-color 130ms ease, color 130ms ease, box-shadow 130ms ease;
+}
+
+.map-pin-toggle-icon {
+  width: 0.62rem;
+  height: 0.76rem;
+  position: relative;
+  display: inline-block;
+}
+
+.map-pin-toggle-icon::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0.1rem;
+  width: 0.4rem;
+  height: 0.4rem;
+  border: 1.5px solid currentColor;
+  border-radius: 999px;
+  background: transparent;
+  box-sizing: border-box;
+}
+
+.map-pin-toggle-icon::after {
+  content: '';
+  position: absolute;
+  top: 0.34rem;
+  left: 0.27rem;
+  width: 0;
+  height: 0.36rem;
+  border-left: 1.5px solid currentColor;
+  box-sizing: border-box;
+}
+
+.map-pin-toggle:hover,
+.map-pin-toggle:focus-visible {
+  border-color: #be9a70;
+  background: #fff4e4;
+  color: #5b3d1e;
+  outline: none;
+}
+
+.map-pin-toggle.is-pinned {
+  border-color: #2f86b8;
+  background: #e7f3fb;
+  color: #0f5a85;
+  box-shadow: 0 0 0 1px rgb(15 90 133 / 12%);
+}
+
+.map-pin-toggle.is-pinned .map-pin-toggle-icon::before {
+  background: currentColor;
+}
+
+.map-pin-toggle-info {
+  border-color: #c6d8c8;
+  background: #f4faf4;
+  color: #2b6d49;
+}
+
+.info-entity-chip-shell.has-pin-toggle .map-pin-toggle-info {
+  width: 1.02rem;
+  height: 1.12rem;
+  margin-left: -1px;
+  border-radius: 0 999px 999px 0;
+  border-color: #cfdbcf;
+  background: #f0f6f0;
+}
+
+.info-entity-chip-shell.has-pin-toggle.is-pinned .map-pin-toggle-info {
+  border-color: #5f98bd;
+  background: #dfedf7;
+  color: #155d88;
+  box-shadow: 0 0 0 1px rgb(21 93 136 / 12%);
+}
+
+.info-entity-chip-shell.has-pin-toggle .map-pin-toggle-info .map-pin-toggle-icon {
+  width: 0.5rem;
+  height: 0.62rem;
+}
+
+.info-entity-chip-shell.has-pin-toggle .map-pin-toggle-info .map-pin-toggle-icon::before {
+  left: 0.09rem;
+  width: 0.34rem;
+  height: 0.34rem;
+}
+
+.info-entity-chip-shell.has-pin-toggle .map-pin-toggle-info .map-pin-toggle-icon::after {
+  top: 0.3rem;
+  left: 0.25rem;
+  height: 0.32rem;
+}
+
+.map-pin-toggle-info:hover,
+.map-pin-toggle-info:focus-visible {
+  border-color: #8eb196;
+  background: #e7f3e9;
+  color: #1b5638;
+}
+
+.map-pin-toggle-info.is-pinned {
+  border-color: #5f98bd;
+  background: #dfedf7;
+  color: #155d88;
+}
+
+.info-entity-chip-shell.has-pin-toggle .map-pin-toggle-info:hover,
+.info-entity-chip-shell.has-pin-toggle .map-pin-toggle-info:focus-visible {
+  border-color: #89af96;
+  background: #e2efe4;
+  color: #17442e;
+}
+
+.info-entity-chip-shell.has-pin-toggle.is-pinned .map-pin-toggle-info:hover,
+.info-entity-chip-shell.has-pin-toggle.is-pinned .map-pin-toggle-info:focus-visible {
+  border-color: #3d7ea8;
+  background: #d1e6f4;
+  color: #0f4f74;
 }
 
 #info-content table {
@@ -998,6 +1167,7 @@ body.has-image-modal {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
+  gap: 0.24rem;
 }
 
 button.hierarchy-node {

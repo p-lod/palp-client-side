@@ -262,19 +262,33 @@ function renderActionableInfoEntityRow(config) {
     sectionLabel,
     dataUrnAttribute,
     items,
+    enablePin = false,
+    pinContextClass = 'map-pin-toggle-info',
   } = config;
 
   if (!items.length) return '';
 
   const chips = items.map(item => {
-    const withinMeta = item.within ? `<span class="info-action-chip-meta">${escHtml(item.within)}</span>` : '';
     const titleBits = [item.label, item.shortId];
     if (item.within) titleBits.push(`within ${item.within}`);
     const title = `${sectionLabel}: ${titleBits.join(' • ')}`;
+    const pinButtonHtml = enablePin
+      ? renderMapPinToggleButton({
+          urn: item.urn,
+          shortLabel: item.shortId,
+          contextClass: pinContextClass,
+          hoverUrnAttribute: dataUrnAttribute,
+        })
+      : '';
+    const chipShellClass = `info-entity-chip-shell${pinButtonHtml ? ' has-pin-toggle' : ''}`;
+
     return (
+      `<span class="${chipShellClass}">` +
       `<button type="button" class="${itemClass}" data-navigate="${escAttr(item.shortId)}" ${dataUrnAttribute}="${escAttr(item.urn)}" title="${escAttr(title)}" aria-label="${escAttr(item.label)}">` +
-      `<span class="info-action-chip-label">${escHtml(item.label)}</span>${withinMeta}` +
-      '</button>'
+      `<span class="info-action-chip-label">${escHtml(item.label)}</span>` +
+      '</button>' +
+      pinButtonHtml +
+      '</span>'
     );
   }).join('');
 
@@ -284,6 +298,230 @@ function renderActionableInfoEntityRow(config) {
       `<span class="${listClass}">${chips}</span>` +
     '</div>'
   );
+}
+
+function renderMapPinToggleButton({ urn, shortLabel = '', contextClass = '', hoverUrnAttribute = '' } = {}) {
+  if (!urn) return '';
+
+  const shortText = String(shortLabel || extractShortId(urn) || '').trim();
+  const safeLabel = shortText || 'item';
+  const label = `Pin ${safeLabel} geometry on map`;
+  const classSuffix = contextClass ? ` ${contextClass}` : '';
+  const hoverAttr = hoverUrnAttribute ? ` ${hoverUrnAttribute}="${escAttr(urn)}"` : '';
+
+  return (
+    `<button type="button" class="map-pin-toggle${classSuffix}" data-map-pin-urn="${escAttr(urn)}" data-map-pin-label="${escAttr(safeLabel)}"${hoverAttr} aria-pressed="false" aria-label="${escAttr(label)}" title="${escAttr(label)}">` +
+      '<span class="map-pin-toggle-icon" aria-hidden="true"></span>' +
+    '</button>'
+  );
+}
+
+function syncMapPinToggleButtonState(button, isPinned) {
+  if (!button) return;
+
+  const pinLabel = String(button.dataset.mapPinLabel || 'item').trim() || 'item';
+  const label = isPinned
+    ? `Unpin ${pinLabel} geometry from map`
+    : `Pin ${pinLabel} geometry on map`;
+
+  button.classList.toggle('is-pinned', !!isPinned);
+  button.setAttribute('aria-pressed', isPinned ? 'true' : 'false');
+  button.setAttribute('aria-label', label);
+  button.setAttribute('title', label);
+
+  const infoChipShell = button.closest('.info-entity-chip-shell.has-pin-toggle');
+  if (infoChipShell) infoChipShell.classList.toggle('is-pinned', !!isPinned);
+}
+
+function refreshMapPinToggleButtons(targetUrn = '') {
+  const shouldFilter = !!targetUrn;
+
+  document.querySelectorAll('[data-map-pin-urn]').forEach(button => {
+    const urn = button.dataset.mapPinUrn;
+    if (!urn) return;
+    if (shouldFilter && urn !== targetUrn) return;
+
+    syncMapPinToggleButtonState(button, isMapGeojsonPinned(urn));
+  });
+}
+
+function bindMapPinToggleButtons(containerEl = document) {
+  if (!containerEl) return;
+
+  containerEl.querySelectorAll('[data-map-pin-urn]').forEach(button => {
+    if (button.dataset.mapPinBound === '1') {
+      syncMapPinToggleButtonState(button, isMapGeojsonPinned(button.dataset.mapPinUrn));
+      return;
+    }
+
+    button.dataset.mapPinBound = '1';
+    syncMapPinToggleButtonState(button, isMapGeojsonPinned(button.dataset.mapPinUrn));
+
+    button.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const urn = button.dataset.mapPinUrn;
+      if (!urn) return;
+      void toggleMapGeojsonPin(urn);
+    });
+  });
+}
+
+function renderInfoEntityRowLoading(config) {
+  const {
+    rowClass,
+    labelClass,
+    listClass,
+    sectionLabel,
+  } = config;
+
+  return (
+    `<div class="${rowClass}">` +
+      `<span class="${labelClass}">${escHtml(sectionLabel)}</span>` +
+      `<span class="${listClass}"><span class="info-chip-section-loading loading" aria-live="polite">Loading...</span></span>` +
+    '</div>'
+  );
+}
+
+function bindInfoNavigationEvents(containerEl) {
+  if (!containerEl) return;
+
+  containerEl.querySelectorAll('[data-navigate]').forEach(el => {
+    if (el.dataset.navigateBound === '1') return;
+    el.dataset.navigateBound = '1';
+    el.addEventListener('click', e => {
+      e.preventDefault();
+      navigate(el.dataset.navigate);
+    });
+  });
+}
+
+function bindInfoActionableEntityRowInteractions(containerEl, config, resourceProfile) {
+  if (!containerEl || !config) return;
+
+  bindInfoNavigationEvents(containerEl);
+  bindMapPinToggleButtons(containerEl);
+
+  const shouldBindMapPreview =
+    (resourceProfile === 'spatial' && config.dataUrnAttribute === 'data-depicted-concept-urn') ||
+    (resourceProfile === 'concept' && config.dataUrnAttribute === 'data-depicted-where-urn');
+
+  bindInfoActionableEntityHoverEvents(
+    containerEl,
+    `[${config.dataUrnAttribute}]`,
+    config.dataUrnAttribute,
+    shouldBindMapPreview
+      ? {
+          onHoverStart: ({ chip, urn }) => {
+            void showInfoChipMapPreview(urn, chip);
+          },
+          onHoverEnd: ({ chip, urn }) => {
+            scheduleInfoChipMapPreviewClear(urn, chip);
+          },
+        }
+      : {}
+  );
+}
+
+function getInfoChipSectionConfigs(shortId, resourceProfile) {
+  if (!shortId) return [];
+
+  if (resourceProfile === 'spatial') {
+    return [
+      {
+        rowClass: 'info-depicted-concepts-row',
+        rowSelector: '.info-depicted-concepts-row',
+        labelClass: 'info-depicted-concepts-label',
+        listClass: 'info-depicted-concepts',
+        itemClass: 'info-depicted-entity-chip info-concept-chip',
+        sectionLabel: 'Depicted concepts',
+        dataUrnAttribute: 'data-depicted-concept-urn',
+        enablePin: true,
+        pinContextClass: 'map-pin-toggle-info',
+        fetcher: () => fetchDepictsConcepts(shortId),
+      },
+    ];
+  }
+
+  if (resourceProfile === 'concept') {
+    return [
+      {
+        rowClass: 'info-depicted-where-row',
+        rowSelector: '.info-depicted-where-row',
+        labelClass: 'info-depicted-where-label',
+        listClass: 'info-depicted-where',
+        itemClass: 'info-depicted-entity-chip info-location-chip',
+        sectionLabel: 'Depicted where',
+        dataUrnAttribute: 'data-depicted-where-urn',
+        enablePin: false,
+        fetcher: () => fetchDepictedWhereForInfo(shortId),
+      },
+    ];
+  }
+
+  return [];
+}
+
+function isInfoChipHydrationTargetCurrent(requestToken, entityUrn) {
+  if (requestToken !== infoChipSectionHydrationToken) return false;
+  if (!entityUrn) return true;
+  return document.getElementById('current-id')?.textContent === entityUrn;
+}
+
+function hydrateInfoChipSectionRow(containerEl, sectionConfig, items, resourceProfile) {
+  if (!containerEl || !sectionConfig) return;
+
+  const rowEl = containerEl.querySelector(sectionConfig.rowSelector);
+  if (!rowEl) return;
+
+  if (!items.length) {
+    rowEl.remove();
+    return;
+  }
+
+  const wrapper = document.createElement('div');
+  wrapper.innerHTML = renderActionableInfoEntityRow({
+    rowClass: sectionConfig.rowClass,
+    labelClass: sectionConfig.labelClass,
+    listClass: sectionConfig.listClass,
+    itemClass: sectionConfig.itemClass,
+    sectionLabel: sectionConfig.sectionLabel,
+    dataUrnAttribute: sectionConfig.dataUrnAttribute,
+    enablePin: !!sectionConfig.enablePin,
+    pinContextClass: sectionConfig.pinContextClass || 'map-pin-toggle-info',
+    items,
+  });
+
+  const nextRowEl = wrapper.firstElementChild;
+  if (!nextRowEl) {
+    rowEl.remove();
+    return;
+  }
+
+  rowEl.replaceWith(nextRowEl);
+  bindInfoActionableEntityRowInteractions(nextRowEl, sectionConfig, resourceProfile);
+}
+
+function loadInfoChipSectionsAsync({ containerEl, shortId, resourceProfile, entityUrn }) {
+  const sectionConfigs = getInfoChipSectionConfigs(shortId, resourceProfile);
+  if (!containerEl || !sectionConfigs.length) return;
+
+  const requestToken = ++infoChipSectionHydrationToken;
+
+  sectionConfigs.forEach(sectionConfig => {
+    void sectionConfig.fetcher()
+      .then(rawItems => {
+        if (!isInfoChipHydrationTargetCurrent(requestToken, entityUrn)) return;
+
+        const normalizedItems = normalizeUniqueRelatedEntityItems(rawItems);
+        hydrateInfoChipSectionRow(containerEl, sectionConfig, normalizedItems, resourceProfile);
+      })
+      .catch(() => {
+        if (!isInfoChipHydrationTargetCurrent(requestToken, entityUrn)) return;
+        hydrateInfoChipSectionRow(containerEl, sectionConfig, [], resourceProfile);
+      });
+  });
 }
 
 function bindInfoChipPreviewState(chip, { isLoading = false, isActive = false } = {}) {
@@ -877,6 +1115,7 @@ let hierarchyState = null;
 let hierarchyPreviewLayer = null;
 let hierarchyPreviewUrn = null;
 let hierarchyPreviewRequestToken = 0;
+let infoChipSectionHydrationToken = 0;
 let infoChipPreviewLayer = null;
 let infoChipPreviewUrn = null;
 let infoChipPreviewRequestToken = 0;
@@ -884,6 +1123,11 @@ let infoChipPreviewClearTimeoutId = null;
 let activeInfoChipPreviewChipEl = null;
 let infoChipPreviewGeoJsonCache = new Map();
 let pendingInfoChipPreviewGeoJsonByUrn = new Map();
+let pinnedGeojsonUrns = new Set();
+let pinnedGeojsonLayerByUrn = new Map();
+let pinnedGeojsonCacheByUrn = new Map();
+let pendingPinnedGeojsonByUrn = new Map();
+let pinnedGeojsonRequestToken = 0;
 let suppressMapToImageHighlight = false;
 let imageHoverIntentTimeoutByEl = new WeakMap();
 const imageModalState = {
@@ -1027,6 +1271,14 @@ const INFO_CHIP_PREVIEW_STYLE = Object.freeze({
   weight: 4,
   fillColor: '#4cc38a',
   fillOpacity: 0.28,
+  opacity: 1,
+});
+
+const PINNED_GEOJSON_STYLE = Object.freeze({
+  color: '#0e5f8b',
+  weight: 3,
+  fillColor: '#4aa7d1',
+  fillOpacity: 0.22,
   opacity: 1,
 });
 
@@ -2718,6 +2970,7 @@ function clearMapLayers() {
   cancelAllAttentionPulses();
   clearHierarchyPreview();
   clearInfoChipMapPreview({ clearChipState: true, clearCache: true });
+  clearPinnedGeojsonState({ clearCache: true, removeLayers: false });
   if (mapFocusHintTimeoutId) {
     clearTimeout(mapFocusHintTimeoutId);
     mapFocusHintTimeoutId = null;
@@ -2765,6 +3018,132 @@ function clearInfoChipMapPreview(options = {}) {
   }
 }
 
+function isMapGeojsonPinned(urn) {
+  return !!urn && pinnedGeojsonUrns.has(urn);
+}
+
+function removePinnedGeojsonLayer(urn) {
+  const layer = pinnedGeojsonLayerByUrn.get(urn);
+  if (!layer) return;
+  if (layerGroup && layerGroup.hasLayer(layer)) layerGroup.removeLayer(layer);
+  pinnedGeojsonLayerByUrn.delete(urn);
+}
+
+function bringPinnedGeojsonLayersToFront() {
+  if (!layerGroup) return;
+  pinnedGeojsonLayerByUrn.forEach(layer => {
+    if (layerGroup.hasLayer(layer)) layer.bringToFront();
+  });
+}
+
+function clearPinnedGeojsonState(options = {}) {
+  const { clearCache = false, removeLayers = true } = options;
+  pinnedGeojsonRequestToken += 1;
+
+  if (removeLayers) {
+    Array.from(pinnedGeojsonLayerByUrn.keys()).forEach(removePinnedGeojsonLayer);
+  }
+
+  pinnedGeojsonUrns.clear();
+  pinnedGeojsonLayerByUrn.clear();
+  pendingPinnedGeojsonByUrn.clear();
+  if (clearCache) pinnedGeojsonCacheByUrn.clear();
+  refreshMapPinToggleButtons();
+}
+
+function setMapGeojsonPinState(urn, shouldPin) {
+  if (!urn) return;
+
+  if (shouldPin) {
+    pinnedGeojsonUrns.add(urn);
+  } else {
+    pinnedGeojsonUrns.delete(urn);
+    removePinnedGeojsonLayer(urn);
+  }
+
+  refreshMapPinToggleButtons(urn);
+}
+
+async function ensurePinnedGeojsonPayload(urn) {
+  if (!urn) return null;
+  if (pinnedGeojsonCacheByUrn.has(urn)) return pinnedGeojsonCacheByUrn.get(urn);
+  if (pendingPinnedGeojsonByUrn.has(urn)) return pendingPinnedGeojsonByUrn.get(urn);
+
+  const pending = (async () => {
+    try {
+      const shortId = extractShortId(urn);
+      const r = await fetch(`${API_BASE}/geojson/${encodeURIComponent(shortId)}`);
+      if (!r.ok) return null;
+
+      const payload = await r.json();
+      const geojson = payload && payload.geojson ? payload.geojson : payload;
+      pinnedGeojsonCacheByUrn.set(urn, geojson || null);
+      return geojson || null;
+    } catch (_) {
+      pinnedGeojsonCacheByUrn.set(urn, null);
+      return null;
+    } finally {
+      pendingPinnedGeojsonByUrn.delete(urn);
+    }
+  })();
+
+  pendingPinnedGeojsonByUrn.set(urn, pending);
+  return pending;
+}
+
+async function ensurePinnedGeojsonLayerForUrn(urn) {
+  if (!urn || !leafletMap || !layerGroup) return null;
+  if (!isMapGeojsonPinned(urn)) return null;
+
+  const existing = pinnedGeojsonLayerByUrn.get(urn);
+  if (existing) {
+    if (!layerGroup.hasLayer(existing)) existing.addTo(layerGroup);
+    existing.bringToFront();
+    return existing;
+  }
+
+  const requestToken = pinnedGeojsonRequestToken;
+  const geojsonData = await ensurePinnedGeojsonPayload(urn);
+  if (requestToken !== pinnedGeojsonRequestToken) return null;
+  if (!isMapGeojsonPinned(urn)) return null;
+
+  const parsed = parseGeoJson(geojsonData);
+  if (!parsed || !layerGroup) return null;
+
+  const layer = L.geoJSON(parsed, {
+    style: { ...PINNED_GEOJSON_STYLE, className: 'plod-pinned-geojson' },
+    interactive: false,
+  }).addTo(layerGroup);
+  layer.bringToFront();
+  pinnedGeojsonLayerByUrn.set(urn, layer);
+  return layer;
+}
+
+async function toggleMapGeojsonPin(urn) {
+  if (!urn) return;
+
+  const shouldPin = !isMapGeojsonPinned(urn);
+  setMapGeojsonPinState(urn, shouldPin);
+
+  if (!shouldPin) return;
+
+  if (hierarchyPreviewUrn === urn) clearHierarchyPreview();
+  if (infoChipPreviewUrn === urn) {
+    clearInfoChipMapPreviewLayer();
+    if (activeInfoChipPreviewChipEl) {
+      bindInfoChipPreviewState(activeInfoChipPreviewChipEl, { isLoading: false, isActive: true });
+    }
+  }
+
+  const layer = await ensurePinnedGeojsonLayerForUrn(urn);
+  if (!layer) {
+    setMapGeojsonPinState(urn, false);
+    return;
+  }
+
+  bringPinnedGeojsonLayersToFront();
+}
+
 async function ensureInfoChipPreviewGeoJson(urn) {
   if (!urn) return null;
   if (infoChipPreviewGeoJsonCache.has(urn)) return infoChipPreviewGeoJsonCache.get(urn);
@@ -2796,6 +3175,17 @@ async function showInfoChipMapPreview(urn, chip) {
   if (!urn || !chip || !leafletMap || !layerGroup) return;
   if (currentResourceProfile !== 'spatial' && currentResourceProfile !== 'concept') return;
 
+  if (isMapGeojsonPinned(urn)) {
+    clearInfoChipPreviewClearTimeout();
+    if (activeInfoChipPreviewChipEl && activeInfoChipPreviewChipEl !== chip) {
+      bindInfoChipPreviewState(activeInfoChipPreviewChipEl, { isLoading: false, isActive: false });
+    }
+    activeInfoChipPreviewChipEl = chip;
+    bindInfoChipPreviewState(chip, { isLoading: false, isActive: true });
+    bringPinnedGeojsonLayersToFront();
+    return;
+  }
+
   clearInfoChipPreviewClearTimeout();
   const requestToken = ++infoChipPreviewRequestToken;
 
@@ -2816,6 +3206,10 @@ async function showInfoChipMapPreview(urn, chip) {
   const geojsonData = await ensureInfoChipPreviewGeoJson(urn);
   if (requestToken !== infoChipPreviewRequestToken) return;
   if (activeInfoChipPreviewChipEl !== chip) return;
+  if (isMapGeojsonPinned(urn)) {
+    bindInfoChipPreviewState(chip, { isLoading: false, isActive: true });
+    return;
+  }
 
   const parsed = parseGeoJson(geojsonData);
   if (!parsed || !layerGroup) {
@@ -2838,6 +3232,8 @@ function scheduleInfoChipMapPreviewClear(urn, chip) {
     bindInfoChipPreviewState(chip, { isLoading: false, isActive: false });
     if (activeInfoChipPreviewChipEl === chip) activeInfoChipPreviewChipEl = null;
   }
+
+  if (isMapGeojsonPinned(urn)) return;
 
   clearInfoChipPreviewClearTimeout();
   const requestToken = ++infoChipPreviewRequestToken;
@@ -3103,12 +3499,26 @@ function getHierarchySlot() {
   return getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER);
 }
 
+function canRenderHierarchyPinToggle(node) {
+  return !!(node && node.urn);
+}
+
 function renderHierarchyLine(node, kind = 'ancestor') {
   const typeHtml = node.type ? `<span class="hierarchy-node-type">${escHtml(node.type)}</span>` : '';
+  const pinHtml = canRenderHierarchyPinToggle(node)
+    ? renderMapPinToggleButton({
+        urn: node.urn,
+        shortLabel: extractShortId(node.urn),
+        contextClass: 'map-pin-toggle-hierarchy',
+      })
+    : '';
+
   return `<div class="hierarchy-node hierarchy-node-${kind}">` +
          `<span class="hierarchy-node-main">` +
          `<span class="hierarchy-node-label">${escHtml(node.label)}</span>${typeHtml}</span>` +
+         `<span class="hierarchy-node-actions">${pinHtml}` +
          `<button type="button" class="hierarchy-go" data-hierarchy-go="${escAttr(node.urn)}" aria-label="Go to ${escAttr(extractShortId(node.urn))}" title="Go to ${escAttr(extractShortId(node.urn))}">↗</button>` +
+         `</span>` +
          `</div>`;
 }
 
@@ -3130,12 +3540,21 @@ function renderHierarchyBranch(node, state) {
     ? `<ul class="hierarchy-children">${children.map(child => renderHierarchyBranch(child, state)).join('')}</ul>`
     : '';
 
+  const pinHtml = canRenderHierarchyPinToggle(node)
+    ? renderMapPinToggleButton({
+        urn: node.urn,
+        shortLabel: extractShortId(node.urn),
+        contextClass: 'map-pin-toggle-hierarchy',
+      })
+    : '';
+
   return `<li class="hierarchy-item">` +
          `<div class="hierarchy-row">${toggleHtml}` +
          `<button type="button" class="hierarchy-node hierarchy-node-child" data-hierarchy-preview="${escAttr(node.urn)}">` +
       `<span class="hierarchy-node-main">` +
       `<span class="hierarchy-node-label">${escHtml(node.label)}</span>${typeHtml}</span>` +
       `<span class="hierarchy-node-actions">` +
+      pinHtml +
       `<button type="button" class="hierarchy-go" data-hierarchy-go="${escAttr(node.urn)}" aria-label="Go to ${escAttr(extractShortId(node.urn))}" title="Go to ${escAttr(extractShortId(node.urn))}">↗</button>` +
       `</span></button></div>${nestedHtml}</li>`;
 }
@@ -3206,12 +3625,14 @@ async function ensureHierarchyNodeGeojson(urn) {
 
 async function previewHierarchyNode(urn) {
   if (!urn || !hierarchyState || hierarchyState.currentNode.urn === urn) return;
+  if (isMapGeojsonPinned(urn)) return;
   if (hierarchyPreviewUrn === urn) return;
 
   clearHierarchyPreview();
   const requestToken = hierarchyPreviewRequestToken;
   const geojsonData = await ensureHierarchyNodeGeojson(urn);
   if (requestToken !== hierarchyPreviewRequestToken) return;
+  if (isMapGeojsonPinned(urn)) return;
 
   const parsed = parseGeoJson(geojsonData);
   if (!parsed || !layerGroup) return;
@@ -3226,6 +3647,7 @@ async function previewHierarchyNode(urn) {
 
 function clearHierarchyPreviewIfMatchingUrn(urn) {
   if (!urn) return;
+  if (isMapGeojsonPinned(urn)) return;
   if (hierarchyPreviewUrn !== urn) return;
   clearHierarchyPreview();
 }
@@ -3268,6 +3690,8 @@ async function toggleHierarchyNode(urn) {
 
 function wireHierarchyInteractions(slotEl) {
   if (!slotEl) return;
+
+  bindMapPinToggleButtons(slotEl);
 
   slotEl.querySelectorAll('[data-hierarchy-toggle]').forEach(button => {
     button.addEventListener('click', e => {
@@ -3312,20 +3736,12 @@ async function renderInfo(triples, el, shortId = '', resourceProfile = 'default'
     return;
   }
 
-  const label   = (triples['http://www.w3.org/2000/01/rdf-schema#label'] || [])[0] || '';
+  const label   = (triples['http://www.w3.org/2000/01/rdf-schema#label'] || [])[0] || shortId;
   const typeUrn = (triples['http://www.w3.org/1999/02/22-rdf-syntax-ns#type'] || [])[0] || '';
-
-  let depictedConceptItems = [];
-  let depictedWhereItems = [];
-
-  if (shortId && resourceProfile === 'spatial') {
-    depictedConceptItems = normalizeUniqueRelatedEntityItems(await fetchDepictsConcepts(shortId));
-  } else if (shortId && resourceProfile === 'concept') {
-    depictedWhereItems = normalizeUniqueRelatedEntityItems(await fetchDepictedWhereForInfo(shortId));
-  }
+  const chipSectionConfigs = getInfoChipSectionConfigs(shortId, resourceProfile);
 
   let html = '';
-  if (label)   html += `<p class="entity-title">${escHtml(label)}</p>`;
+  html += `<p class="entity-title">${escHtml(label)}</p>`;
   if (typeUrn) html += `<p class="entity-type">${escHtml(extractShortId(typeUrn))}</p>`;
 
   const externalLinks = collectExternalLinks(triples);
@@ -3339,25 +3755,7 @@ async function renderInfo(triples, el, shortId = '', resourceProfile = 'default'
       '</span></div>';
   }
 
-  html += renderActionableInfoEntityRow({
-    rowClass: 'info-depicted-concepts-row',
-    labelClass: 'info-depicted-concepts-label',
-    listClass: 'info-depicted-concepts',
-    itemClass: 'info-depicted-entity-chip info-concept-chip',
-    sectionLabel: 'Depicted concepts',
-    dataUrnAttribute: 'data-depicted-concept-urn',
-    items: depictedConceptItems,
-  });
-
-  html += renderActionableInfoEntityRow({
-    rowClass: 'info-depicted-where-row',
-    labelClass: 'info-depicted-where-label',
-    listClass: 'info-depicted-where',
-    itemClass: 'info-depicted-entity-chip info-location-chip',
-    sectionLabel: 'Depicted where',
-    dataUrnAttribute: 'data-depicted-where-urn',
-    items: depictedWhereItems,
-  });
+  html += chipSectionConfigs.map(renderInfoEntityRowLoading).join('');
 
   html += '<table><tbody>';
   for (const [pred, vals] of Object.entries(triples)) {
@@ -3382,44 +3780,14 @@ async function renderInfo(triples, el, shortId = '', resourceProfile = 'default'
 
   el.innerHTML = html;
 
-  // Wire internal P-LOD links to the router
-  el.querySelectorAll('[data-navigate]').forEach(a => {
-    a.addEventListener('click', e => {
-      e.preventDefault();
-      navigate(a.dataset.navigate);
-    });
+  bindInfoNavigationEvents(el);
+  bindMapPinToggleButtons(el);
+  loadInfoChipSectionsAsync({
+    containerEl: el,
+    shortId,
+    resourceProfile,
+    entityUrn,
   });
-
-  bindInfoActionableEntityHoverEvents(
-    el,
-    '[data-depicted-concept-urn]',
-    'data-depicted-concept-urn',
-    resourceProfile === 'spatial'
-      ? {
-          onHoverStart: ({ chip, urn }) => {
-            void showInfoChipMapPreview(urn, chip);
-          },
-          onHoverEnd: ({ chip, urn }) => {
-            scheduleInfoChipMapPreviewClear(urn, chip);
-          },
-        }
-      : {}
-  );
-  bindInfoActionableEntityHoverEvents(
-    el,
-    '[data-depicted-where-urn]',
-    'data-depicted-where-urn',
-    resourceProfile === 'concept'
-      ? {
-          onHoverStart: ({ chip, urn }) => {
-            void showInfoChipMapPreview(urn, chip);
-          },
-          onHoverEnd: ({ chip, urn }) => {
-            scheduleInfoChipMapPreviewClear(urn, chip);
-          },
-        }
-      : {}
-  );
 }
 
 // ── Panel: Images ─────────────────────────────────────────────────────────────
