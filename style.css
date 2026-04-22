@@ -444,8 +444,8 @@ body.has-image-modal {
 }
 
 .map-pin-toggle-icon {
-  width: 0.62rem;
-  height: 0.76rem;
+  width: 0.64rem;
+  height: 0.64rem;
   position: relative;
   display: inline-block;
 }
@@ -453,11 +453,8 @@ body.has-image-modal {
 .map-pin-toggle-icon::before {
   content: '';
   position: absolute;
-  top: 0;
-  left: 0.1rem;
-  width: 0.4rem;
-  height: 0.4rem;
-  border: 1.5px solid currentColor;
+  inset: 0;
+  border: 1.6px solid currentColor;
   border-radius: 999px;
   background: transparent;
   box-sizing: border-box;
@@ -466,12 +463,14 @@ body.has-image-modal {
 .map-pin-toggle-icon::after {
   content: '';
   position: absolute;
-  top: 0.34rem;
-  left: 0.27rem;
-  width: 0;
-  height: 0.36rem;
-  border-left: 1.5px solid currentColor;
-  box-sizing: border-box;
+  top: 50%;
+  left: 50%;
+  width: 0.22rem;
+  height: 0.22rem;
+  border-radius: 999px;
+  background: currentColor;
+  transform: translate(-50%, -50%) scale(0);
+  transition: transform 130ms ease;
 }
 
 .map-pin-toggle:hover,
@@ -489,8 +488,8 @@ body.has-image-modal {
   box-shadow: 0 0 0 1px rgb(15 90 133 / 12%);
 }
 
-.map-pin-toggle.is-pinned .map-pin-toggle-icon::before {
-  background: currentColor;
+.map-pin-toggle.is-pinned .map-pin-toggle-icon::after {
+  transform: translate(-50%, -50%) scale(1);
 }
 
 .map-pin-toggle-info {
@@ -516,20 +515,17 @@ body.has-image-modal {
 }
 
 .info-entity-chip-shell.has-pin-toggle .map-pin-toggle-info .map-pin-toggle-icon {
-  width: 0.5rem;
-  height: 0.62rem;
+  width: 0.52rem;
+  height: 0.52rem;
 }
 
 .info-entity-chip-shell.has-pin-toggle .map-pin-toggle-info .map-pin-toggle-icon::before {
-  left: 0.09rem;
-  width: 0.34rem;
-  height: 0.34rem;
+  border-width: 1.5px;
 }
 
 .info-entity-chip-shell.has-pin-toggle .map-pin-toggle-info .map-pin-toggle-icon::after {
-  top: 0.3rem;
-  left: 0.25rem;
-  height: 0.32rem;
+  width: 0.18rem;
+  height: 0.18rem;
 }
 
 .map-pin-toggle-info:hover,
