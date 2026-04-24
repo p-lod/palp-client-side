@@ -337,6 +337,10 @@ body.has-image-modal {
   min-width: 0;
 }
 
+.info-style-depicted-where-row {
+  margin-top: -0.1rem;
+}
+
 .info-chip-section-loading {
   display: inline-flex;
   align-items: center;

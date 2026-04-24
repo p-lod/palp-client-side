@@ -2,6 +2,7 @@
 
 const API_BASE   = 'https://api.p-lod.org';
 const DEFAULT_ID = 'urn:p-lod:id:pompeii';
+const POMPEIAN_WALL_PAINTING_STYLE_TYPE = 'urn:p-lod:id:pompeian-wall-painting-style';
 
 // Types that have spatial geometry and spatial children
 const SPATIAL_TYPES = new Set([
@@ -408,8 +409,8 @@ function bindInfoActionableEntityRowInteractions(containerEl, config, resourcePr
   bindMapPinToggleButtons(containerEl);
 
   const shouldBindMapPreview =
-    (resourceProfile === 'spatial' && config.dataUrnAttribute === 'data-depicted-concept-urn') ||
-    (resourceProfile === 'concept' && config.dataUrnAttribute === 'data-depicted-where-urn');
+    config.dataUrnAttribute === 'data-depicted-where-urn'
+    || (resourceProfile === 'spatial' && config.dataUrnAttribute === 'data-depicted-concept-urn');
 
   bindInfoActionableEntityHoverEvents(
     containerEl,
@@ -428,40 +429,49 @@ function bindInfoActionableEntityRowInteractions(containerEl, config, resourcePr
   );
 }
 
-function getInfoChipSectionConfigs(shortId, resourceProfile) {
+function createDepictedConceptsInfoChipSectionConfig(shortId) {
+  return {
+    rowClass: 'info-depicted-concepts-row',
+    rowSelector: '.info-depicted-concepts-row',
+    labelClass: 'info-depicted-concepts-label',
+    listClass: 'info-depicted-concepts',
+    itemClass: 'info-depicted-entity-chip info-concept-chip',
+    sectionLabel: 'Depicted concepts',
+    dataUrnAttribute: 'data-depicted-concept-urn',
+    enablePin: true,
+    pinContextClass: 'map-pin-toggle-info',
+    fetcher: () => fetchDepictsConcepts(shortId),
+  };
+}
+
+function createDepictedWhereInfoChipSectionConfig(shortId, rowClass = 'info-depicted-where-row') {
+  return {
+    rowClass,
+    rowSelector: `.${rowClass.split(' ').join('.')}`,
+    labelClass: 'info-depicted-where-label',
+    listClass: 'info-depicted-where',
+    itemClass: 'info-depicted-entity-chip info-location-chip',
+    sectionLabel: 'Depicted where',
+    dataUrnAttribute: 'data-depicted-where-urn',
+    enablePin: false,
+    fetcher: () => fetchDepictedWhereForInfo(shortId),
+  };
+}
+
+function getInfoChipSectionConfigs(shortId, resourceProfile, resourceTypeUrn = '') {
   if (!shortId) return [];
+  const isWallPaintingStyle = resourceTypeUrn === POMPEIAN_WALL_PAINTING_STYLE_TYPE;
 
   if (resourceProfile === 'spatial') {
-    return [
-      {
-        rowClass: 'info-depicted-concepts-row',
-        rowSelector: '.info-depicted-concepts-row',
-        labelClass: 'info-depicted-concepts-label',
-        listClass: 'info-depicted-concepts',
-        itemClass: 'info-depicted-entity-chip info-concept-chip',
-        sectionLabel: 'Depicted concepts',
-        dataUrnAttribute: 'data-depicted-concept-urn',
-        enablePin: true,
-        pinContextClass: 'map-pin-toggle-info',
-        fetcher: () => fetchDepictsConcepts(shortId),
-      },
-    ];
+    const sectionConfigs = [createDepictedConceptsInfoChipSectionConfig(shortId)];
+    if (isWallPaintingStyle) {
+      sectionConfigs.push(createDepictedWhereInfoChipSectionConfig(shortId, 'info-depicted-where-row info-style-depicted-where-row'));
+    }
+    return sectionConfigs;
   }
 
   if (resourceProfile === 'concept') {
-    return [
-      {
-        rowClass: 'info-depicted-where-row',
-        rowSelector: '.info-depicted-where-row',
-        labelClass: 'info-depicted-where-label',
-        listClass: 'info-depicted-where',
-        itemClass: 'info-depicted-entity-chip info-location-chip',
-        sectionLabel: 'Depicted where',
-        dataUrnAttribute: 'data-depicted-where-urn',
-        enablePin: false,
-        fetcher: () => fetchDepictedWhereForInfo(shortId),
-      },
-    ];
+    return [createDepictedWhereInfoChipSectionConfig(shortId)];
   }
 
   return [];
@@ -507,8 +517,8 @@ function hydrateInfoChipSectionRow(containerEl, sectionConfig, items, resourcePr
   bindInfoActionableEntityRowInteractions(nextRowEl, sectionConfig, resourceProfile);
 }
 
-function loadInfoChipSectionsAsync({ containerEl, shortId, resourceProfile, entityUrn }) {
-  const sectionConfigs = getInfoChipSectionConfigs(shortId, resourceProfile);
+function loadInfoChipSectionsAsync({ containerEl, shortId, resourceProfile, resourceTypeUrn = '', entityUrn }) {
+  const sectionConfigs = getInfoChipSectionConfigs(shortId, resourceProfile, resourceTypeUrn);
   if (!containerEl || !sectionConfigs.length) return;
 
   const requestToken = ++infoChipSectionHydrationToken;
@@ -580,7 +590,7 @@ async function fetchDepictsConcepts(shortId) {
 }
 
 async function fetchDepictedWhereForInfo(shortId) {
-  const payload = await fetchDepictedWhereByDetail(shortId, 'space');
+  const payload = await fetchDepictedWhereAtDetailLevel(shortId, 'space');
   return Array.isArray(payload) ? payload : [];
 }
 
@@ -631,6 +641,16 @@ function debounce(fn, waitMs) {
     if (timeoutId) clearTimeout(timeoutId);
     timeoutId = setTimeout(() => fn(...args), waitMs);
   };
+}
+
+function getInfoChipSuppressedPredicateTails(chipSectionConfigs) {
+  const tails = new Set();
+  for (const config of (chipSectionConfigs || [])) {
+    if (!config || !config.dataUrnAttribute) continue;
+    if (config.dataUrnAttribute === 'data-depicted-concept-urn') tails.add('depicts-concepts');
+    if (config.dataUrnAttribute === 'data-depicted-where-urn') tails.add('depicted-where');
+  }
+  return tails;
 }
 
 function normalizeTypeaheadRecord(item, sourceType) {
@@ -911,10 +931,144 @@ function parsePaneLayout(raw) {
   return isValidPaneLayout(out) ? clonePaneLayout(out) : null;
 }
 
-function resolveResourceProfile(typeUrn) {
+function fetchSpatialChildren(shortId) {
+  return fetch(`${API_BASE}/spatial-children/${encodeURIComponent(shortId)}`)
+    .then(r => r.ok ? r.json() : [])
+    .catch(() => []);
+}
+
+function fetchEntityImages(shortId) {
+  return fetch(`${API_BASE}/images/${encodeURIComponent(shortId)}`)
+    .then(r => r.ok ? r.json() : [])
+    .catch(() => []);
+}
+
+async function buildSpatialSelfMapItem(entityUrn, shortId, label, selfGjStr) {
+  let gjStr = selfGjStr;
+  if (!gjStr) {
+    try {
+      const r = await fetch(`${API_BASE}/geojson/${encodeURIComponent(shortId)}`);
+      if (r.ok) gjStr = JSON.stringify(await r.json());
+    } catch (_) { /* ignore */ }
+  }
+
+  if (!gjStr || gjStr === 'None') return null;
+  return { urn: entityUrn, label, geojson: gjStr };
+}
+
+function createResourceHandler({
+  key,
+  profile,
+  isSpatial = false,
+  promoteSelfGeometryToPrimaryLayer = false,
+  spatialMapSource = 'spatial-children',
+}) {
+  return Object.freeze({
+    key,
+    profile,
+    isSpatial,
+    promoteSelfGeometryToPrimaryLayer,
+    resolvePaneLayout(overrideLayout) {
+      if (overrideLayout) {
+        return {
+          profile,
+          layout: normalizePaneLayout(overrideLayout, DEFAULT_PANE_LAYOUT),
+          fromOverride: true,
+        };
+      }
+
+      return {
+        profile,
+        layout: getDefaultPaneLayoutForProfile(profile),
+        fromOverride: false,
+      };
+    },
+    getHierarchyProfile() {
+      return profile === 'concept' || profile === 'spatial' ? profile : null;
+    },
+    getImagesPromise(shortId) {
+      return isSpatial ? fetchEntityImages(shortId) : Promise.resolve(null);
+    },
+    getMapDataPromise(shortId) {
+      if (isSpatial) {
+        return spatialMapSource === 'depicted-where-fallback'
+          ? fetchDepictedWhereWithSpaceFallback(shortId)
+          : fetchSpatialChildren(shortId);
+      }
+
+      return fetchDepictedWhereWithSpaceFallback(shortId);
+    },
+    getChildItems(mapResult) {
+      if (isSpatial && spatialMapSource === 'depicted-where-fallback') {
+        return {
+          childItems: (mapResult && mapResult.items) || [],
+          conceptDetailLevel: (mapResult && mapResult.detailLevel) || 'feature',
+        };
+      }
+
+      if (isSpatial) {
+        return {
+          childItems: mapResult || [],
+          conceptDetailLevel: 'feature',
+        };
+      }
+
+      return {
+        childItems: (mapResult && mapResult.items) || [],
+        conceptDetailLevel: (mapResult && mapResult.detailLevel) || 'feature',
+      };
+    },
+    renderImagesPane({ bestImageUrns, imagesResult, childItems, slotEl, entityUrn }) {
+      if (isSpatial) {
+        const mergedImages = mergePriorityImages(bestImageUrns, imagesResult || [], entityUrn);
+        renderImages(mergedImages, slotEl, entityUrn);
+        return;
+      }
+
+      renderConceptImages(childItems, slotEl, bestImageUrns, entityUrn);
+    },
+    buildSelfMapItem(entityUrn, shortId, label, selfGjStr) {
+      if (!isSpatial) return Promise.resolve(null);
+      return buildSpatialSelfMapItem(entityUrn, shortId, label, selfGjStr);
+    },
+  });
+}
+
+const DEFAULT_RESOURCE_HANDLER = createResourceHandler({ key: 'default', profile: 'default' });
+const CONCEPT_RESOURCE_HANDLER = createResourceHandler({ key: 'concept', profile: 'concept' });
+const SPATIAL_RESOURCE_HANDLER = createResourceHandler({ key: 'spatial', profile: 'spatial', isSpatial: true });
+const WALL_PAINTING_STYLE_RESOURCE_HANDLER = createResourceHandler({
+  key: 'pompeian-wall-painting-style',
+  profile: 'spatial',
+  isSpatial: true,
+  promoteSelfGeometryToPrimaryLayer: true,
+  spatialMapSource: 'depicted-where-fallback',
+});
+
+const RESOURCE_TYPE_HANDLERS = Object.freeze({
+  [POMPEIAN_WALL_PAINTING_STYLE_TYPE]: WALL_PAINTING_STYLE_RESOURCE_HANDLER,
+});
+
+const RESOURCE_FAMILY_HANDLERS = Object.freeze({
+  default: DEFAULT_RESOURCE_HANDLER,
+  concept: CONCEPT_RESOURCE_HANDLER,
+  spatial: SPATIAL_RESOURCE_HANDLER,
+});
+
+function resolveResourceHandlerFamily(typeUrn) {
   if (SPATIAL_TYPES.has(typeUrn)) return 'spatial';
   if (typeUrn === 'urn:p-lod:id:concept') return 'concept';
   return 'default';
+}
+
+function resolveResourceHandler(typeUrn) {
+  return RESOURCE_TYPE_HANDLERS[typeUrn]
+    || RESOURCE_FAMILY_HANDLERS[resolveResourceHandlerFamily(typeUrn)]
+    || RESOURCE_FAMILY_HANDLERS.default;
+}
+
+function resolveResourceProfile(typeUrn) {
+  return resolveResourceHandler(typeUrn).profile;
 }
 
 function getDefaultPaneLayoutForProfile(profile) {
@@ -923,20 +1077,7 @@ function getDefaultPaneLayoutForProfile(profile) {
 }
 
 function resolvePaneLayout(typeUrn, overrideLayout) {
-  if (overrideLayout) {
-    return {
-      profile: resolveResourceProfile(typeUrn),
-      layout: normalizePaneLayout(overrideLayout, DEFAULT_PANE_LAYOUT),
-      fromOverride: true,
-    };
-  }
-
-  const profile = resolveResourceProfile(typeUrn);
-  return {
-    profile,
-    layout: getDefaultPaneLayoutForProfile(profile),
-    fromOverride: false,
-  };
+  return resolveResourceHandler(typeUrn).resolvePaneLayout(overrideLayout);
 }
 
 function getPaneElements(position) {
@@ -3800,7 +3941,8 @@ async function renderInfo(triples, el, shortId = '', resourceProfile = 'default'
   const rawLabel = (triples['http://www.w3.org/2000/01/rdf-schema#label'] || [])[0] || '';
   const label   = getDisplayLabelOrFallback(rawLabel, shortId);
   const typeUrn = (triples['http://www.w3.org/1999/02/22-rdf-syntax-ns#type'] || [])[0] || '';
-  const chipSectionConfigs = getInfoChipSectionConfigs(shortId, resourceProfile);
+  const chipSectionConfigs = getInfoChipSectionConfigs(shortId, resourceProfile, typeUrn);
+  const suppressedPredicateTails = getInfoChipSuppressedPredicateTails(chipSectionConfigs);
 
   let html = '';
   html += `<p class="entity-title">${escHtml(label)}</p>`;
@@ -3822,6 +3964,7 @@ async function renderInfo(triples, el, shortId = '', resourceProfile = 'default'
   html += '<table><tbody>';
   for (const [pred, vals] of Object.entries(triples)) {
     if (SKIP_PREDICATES.has(pred) || isExternalLinkPredicate(pred)) continue;
+    if (suppressedPredicateTails.has(getPredicateTail(pred))) continue;
     const predLabel   = humanizePredicate(pred);
     const cellContent = vals.map(v => {
       if (isHttpUrl(v)) {
@@ -3848,6 +3991,7 @@ async function renderInfo(triples, el, shortId = '', resourceProfile = 'default'
     containerEl: el,
     shortId,
     resourceProfile,
+    resourceTypeUrn: typeUrn,
     entityUrn,
   });
 }
@@ -4302,7 +4446,7 @@ function renderMap(selfItem, childItems, isSpatial, conceptDetailLevel, slotEl, 
   }
 }
 
-async function fetchDepictedWhereByDetail(shortId, detailLevel) {
+async function fetchDepictedWhereAtDetailLevel(shortId, detailLevel) {
   try {
     const r = await fetch(
       `${API_BASE}/depicted-where/${encodeURIComponent(shortId)}?level_of_detail=${encodeURIComponent(detailLevel)}`
@@ -4316,12 +4460,12 @@ async function fetchDepictedWhereByDetail(shortId, detailLevel) {
 }
 
 async function fetchDepictedWhereWithSpaceFallback(shortId) {
-  const spaceItems = await fetchDepictedWhereByDetail(shortId, 'space');
+  const spaceItems = await fetchDepictedWhereAtDetailLevel(shortId, 'space');
   if (Array.isArray(spaceItems) && spaceItems.length > 0) {
     return { detailLevel: 'space', items: spaceItems };
   }
 
-  const featureItems = await fetchDepictedWhereByDetail(shortId, 'feature');
+  const featureItems = await fetchDepictedWhereAtDetailLevel(shortId, 'feature');
   return {
     detailLevel: 'feature',
     items: Array.isArray(featureItems) ? featureItems : [],
@@ -4367,10 +4511,11 @@ async function loadEntity(rawId) {
   const rawLabel  = (triples['http://www.w3.org/2000/01/rdf-schema#label'] || [])[0] || '';
   const label     = getDisplayLabelOrFallback(rawLabel, shortId);
   const bestImageUrns = getBestImageUrnsFromTriples(triples);
-  const isSpatial = SPATIAL_TYPES.has(typeUrn);
+  const resourceHandler = resolveResourceHandler(typeUrn);
+  const isSpatial = resourceHandler.isSpatial;
   const selfGjStr = (triples['urn:p-lod:id:geojson'] || [])[0] || null;
 
-  const resolved = resolvePaneLayout(typeUrn, currentPaneLayoutOverride);
+  const resolved = resourceHandler.resolvePaneLayout(currentPaneLayoutOverride);
   currentResourceProfile = resolved.profile;
   applyPaneLayout(resolved.layout);
 
@@ -4386,9 +4531,7 @@ async function loadEntity(rawId) {
     currentResourceProfile
   );
 
-  const hierarchyProfile = currentResourceProfile === 'concept' || currentResourceProfile === 'spatial'
-    ? currentResourceProfile
-    : null;
+  const hierarchyProfile = resourceHandler.getHierarchyProfile();
   const currentHierarchyNode = {
     urn: id,
     label,
@@ -4398,14 +4541,8 @@ async function loadEntity(rawId) {
 
   // Step 2: parallel fetches — images (spatial only) + map/concept children + hierarchy
   const [imagesRes, mapRes, hierarchyRes] = await Promise.allSettled([
-    isSpatial
-      ? fetch(`${API_BASE}/images/${encodeURIComponent(shortId)}`)
-          .then(r => r.ok ? r.json() : []).catch(() => [])
-      : Promise.resolve(null),
-    isSpatial
-      ? fetch(`${API_BASE}/spatial-children/${encodeURIComponent(shortId)}`)
-          .then(r => r.ok ? r.json() : []).catch(() => [])
-      : fetchDepictedWhereWithSpaceFallback(shortId),
+    resourceHandler.getImagesPromise(shortId),
+    resourceHandler.getMapDataPromise(shortId),
     hierarchyProfile
       ? buildHierarchyState(hierarchyProfile, currentHierarchyNode)
       : Promise.resolve(null),
@@ -4414,58 +4551,35 @@ async function loadEntity(rawId) {
   let childItems = [];
   let conceptDetailLevel = 'feature';
   if (mapRes.status === 'fulfilled') {
-    if (isSpatial) {
-      childItems = mapRes.value || [];
-    } else {
-      childItems = (mapRes.value && mapRes.value.items) || [];
-      conceptDetailLevel = (mapRes.value && mapRes.value.detailLevel) || 'feature';
-    }
+    const childData = resourceHandler.getChildItems(mapRes.value);
+    childItems = childData.childItems;
+    conceptDetailLevel = childData.conceptDetailLevel;
   }
 
-  if (isSpatial) {
-    const mergedImages = mergePriorityImages(
-      bestImageUrns,
-      imagesRes.status === 'fulfilled' ? imagesRes.value : [],
-      id
-    );
-    renderImages(
-      mergedImages,
-      getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES),
-      id
-    );
-  } else {
-    renderConceptImages(
-      childItems,
-      getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES),
-      bestImageUrns,
-      id
-    );
-  }
+  resourceHandler.renderImagesPane({
+    bestImageUrns,
+    imagesResult: imagesRes.status === 'fulfilled' ? imagesRes.value : null,
+    childItems,
+    slotEl: getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES),
+    entityUrn: id,
+  });
 
   hierarchyState = hierarchyRes.status === 'fulfilled' ? hierarchyRes.value : null;
   rerenderHierarchy();
 
   // Build the self-boundary item for spatial entities
-  let selfItem = null;
-  if (isSpatial) {
-    let gjStr = selfGjStr;
-    if (!gjStr) {
-      // Fallback: try the dedicated /geojson/ endpoint
-      try {
-        const r = await fetch(`${API_BASE}/geojson/${encodeURIComponent(shortId)}`);
-        if (r.ok) gjStr = JSON.stringify(await r.json());
-      } catch (_) { /* ignore */ }
-    }
-    if (gjStr && gjStr !== 'None') {
-      selfItem = { urn: id, label: shortId, geojson: gjStr };
-    }
+  let selfItem = await resourceHandler.buildSelfMapItem(id, shortId, shortId, selfGjStr);
+  let mapChildItems = childItems;
+  if (resourceHandler.promoteSelfGeometryToPrimaryLayer && selfItem) {
+    mapChildItems = [selfItem, ...childItems];
+    selfItem = null;
   }
 
   const mapPosition = getPanePositionForContent(currentPaneLayout, PANE_CONTENT_TYPES.MAP);
   const mapPaneEls = mapPosition ? getPaneElements(mapPosition) : null;
   renderMap(
     selfItem,
-    childItems,
+    mapChildItems,
     isSpatial,
     conceptDetailLevel,
     mapPaneEls ? mapPaneEls.slot : null,
