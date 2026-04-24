@@ -4145,7 +4145,7 @@ function addGeoJsonLayer(item, styleOpts, clickable) {
   const layer = L.geoJSON(gj, {
     style: { ...styleOpts, className: clickable ? 'plod-clickable' : 'plod-static' },
     onEachFeature(_feature, lyr) {
-      const label = item.label || extractShortId(item.urn || '');
+      const label = getDisplayLabelOrFallback(item.label, extractShortId(item.urn || ''));
       lyr.bindTooltip(label, { sticky: true });
       if (item.urn) {
         lyr.on('mouseover', () => {
