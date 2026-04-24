@@ -218,14 +218,18 @@ function isDisplayLabelUsable(label) {
   return !!text && text.toLowerCase() !== 'none';
 }
 
+function getDisplayLabelOrFallback(label, fallback = '') {
+  return isDisplayLabelUsable(label)
+    ? String(label).trim()
+    : String(fallback || '').trim();
+}
+
 function normalizeRelatedEntityItem(item) {
   if (!item || !item.urn) return null;
 
   const urn = String(item.urn);
   const fallbackLabel = extractShortId(urn);
-  const label = isDisplayLabelUsable(item.label)
-    ? String(item.label).trim()
-    : fallbackLabel;
+  const label = getDisplayLabelOrFallback(item.label, fallbackLabel);
 
   const within = String(item.within || '').startsWith('urn:p-lod:id:')
     ? extractShortId(item.within)
@@ -640,9 +644,7 @@ function normalizeTypeaheadRecord(item, sourceType) {
     itemType = extractShortId(item.type);
   }
 
-  const label = (typeof item.label === 'string' && item.label.trim())
-    ? item.label.trim()
-    : null;
+  const label = getDisplayLabelOrFallback(item.label, '');
 
   return { shortId, label, type: itemType };
 }
@@ -3375,9 +3377,7 @@ function normalizeHierarchyNode(item) {
   const urn = normalizeId(rawUrn);
   if (!urn) return null;
 
-  const label = typeof item.label === 'string' && item.label.trim()
-    ? item.label.trim()
-    : extractShortId(urn);
+  const label = getDisplayLabelOrFallback(item.label, extractShortId(urn));
   const type = item.type ? extractShortId(item.type) : '';
 
   return {
@@ -3465,12 +3465,69 @@ function createHierarchyState(profile, currentNode, ancestors, children) {
     expandedUrns: new Set([currentNode.urn]),
     loadingUrns: new Set(),
     leafUrns: new Set(),
+    checkingChildPresenceUrns: new Set(),
+    childPresenceCheckedUrns: new Set(),
   };
 
   upsertHierarchyNode(state, currentNode);
   state.ancestors = recordHierarchyNodes(state, ancestors);
-  state.childrenByParentUrn.set(currentNode.urn, recordHierarchyNodes(state, children));
+  const normalizedChildren = recordHierarchyNodes(state, children);
+  state.childrenByParentUrn.set(currentNode.urn, normalizedChildren);
+  state.childPresenceCheckedUrns.add(currentNode.urn);
+  if (normalizedChildren.length) {
+    state.leafUrns.delete(currentNode.urn);
+  } else {
+    state.leafUrns.add(currentNode.urn);
+  }
+
+  queueHierarchyChildPresenceChecks(state, normalizedChildren);
   return state;
+}
+
+async function probeHierarchyNodeChildPresence(state, urn) {
+  if (!state || !urn) return;
+  if (hierarchyState !== state) return;
+  if (state.childPresenceCheckedUrns.has(urn) || state.checkingChildPresenceUrns.has(urn)) return;
+
+  if (state.childrenByParentUrn.has(urn)) {
+    const knownChildren = state.childrenByParentUrn.get(urn) || [];
+    state.childPresenceCheckedUrns.add(urn);
+    if (knownChildren.length) {
+      state.leafUrns.delete(urn);
+    } else {
+      state.leafUrns.add(urn);
+    }
+    return;
+  }
+
+  state.checkingChildPresenceUrns.add(urn);
+  rerenderHierarchy();
+
+  const children = state.profile === 'concept'
+    ? await fetchConceptualHierarchyChildren(urn)
+    : await fetchSpatialHierarchyChildren(urn);
+
+  if (hierarchyState !== state) return;
+
+  state.checkingChildPresenceUrns.delete(urn);
+  state.childPresenceCheckedUrns.add(urn);
+
+  if (Array.isArray(children) && children.length) {
+    state.leafUrns.delete(urn);
+  } else {
+    state.leafUrns.add(urn);
+  }
+
+  rerenderHierarchy();
+}
+
+function queueHierarchyChildPresenceChecks(state, nodes) {
+  if (!state || !Array.isArray(nodes) || !nodes.length) return;
+
+  for (const node of nodes) {
+    if (!node || !node.urn) continue;
+    void probeHierarchyNodeChildPresence(state, node.urn);
+  }
 }
 
 async function buildHierarchyState(profile, currentNode) {
@@ -3527,10 +3584,11 @@ function renderHierarchyBranch(node, state) {
   const isExpanded = state.expandedUrns.has(node.urn);
   const isLoading = state.loadingUrns.has(node.urn);
   const isLeaf = state.leafUrns.has(node.urn);
+  const isCheckingChildPresence = state.checkingChildPresenceUrns.has(node.urn);
   const typeHtml = node.type ? `<span class="hierarchy-node-type">${escHtml(node.type)}</span>` : '';
 
   let toggleHtml = '<span class="hierarchy-toggle hierarchy-toggle-spacer"></span>';
-  if (isLoading) {
+  if (isLoading || isCheckingChildPresence) {
     toggleHtml = '<span class="hierarchy-toggle hierarchy-toggle-loading">…</span>';
   } else if (!isLeaf) {
     toggleHtml = `<button type="button" class="hierarchy-toggle" data-hierarchy-toggle="${escAttr(node.urn)}" aria-label="Toggle descendants">${isExpanded && children.length ? '−' : '+'}</button>`;
@@ -3680,8 +3738,11 @@ async function toggleHierarchyNode(urn) {
   state.loadingUrns.delete(urn);
   const normalizedChildren = recordHierarchyNodes(state, children);
   state.childrenByParentUrn.set(urn, normalizedChildren);
+  state.childPresenceCheckedUrns.add(urn);
   if (normalizedChildren.length) {
+    state.leafUrns.delete(urn);
     state.expandedUrns.add(urn);
+    queueHierarchyChildPresenceChecks(state, normalizedChildren);
   } else {
     state.leafUrns.add(urn);
   }
@@ -3736,7 +3797,8 @@ async function renderInfo(triples, el, shortId = '', resourceProfile = 'default'
     return;
   }
 
-  const label   = (triples['http://www.w3.org/2000/01/rdf-schema#label'] || [])[0] || shortId;
+  const rawLabel = (triples['http://www.w3.org/2000/01/rdf-schema#label'] || [])[0] || '';
+  const label   = getDisplayLabelOrFallback(rawLabel, shortId);
   const typeUrn = (triples['http://www.w3.org/1999/02/22-rdf-syntax-ns#type'] || [])[0] || '';
   const chipSectionConfigs = getInfoChipSectionConfigs(shortId, resourceProfile);
 
@@ -4302,7 +4364,8 @@ async function loadEntity(rawId) {
   } catch (_) { /* ignore */ }
 
   const typeUrn   = (triples['http://www.w3.org/1999/02/22-rdf-syntax-ns#type'] || [])[0] || '';
-  const label     = (triples['http://www.w3.org/2000/01/rdf-schema#label'] || [])[0] || shortId;
+  const rawLabel  = (triples['http://www.w3.org/2000/01/rdf-schema#label'] || [])[0] || '';
+  const label     = getDisplayLabelOrFallback(rawLabel, shortId);
   const bestImageUrns = getBestImageUrnsFromTriples(triples);
   const isSpatial = SPATIAL_TYPES.has(typeUrn);
   const selfGjStr = (triples['urn:p-lod:id:geojson'] || [])[0] || null;

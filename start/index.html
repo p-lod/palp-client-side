@@ -79,7 +79,9 @@
               if (!item || !item.urn) continue;
               const shortId = extractShortId(item.urn).trim();
               if (!shortId) continue;
-              const label = (typeof item.label === 'string' && item.label.trim()) ? item.label.trim() : null;
+              const label = (typeof item.label === 'string' && item.label.trim() && item.label.trim().toLowerCase() !== 'none')
+                ? item.label.trim()
+                : null;
               let itemType = type;
               if (item.type && String(item.type).startsWith('urn:p-lod:id:')) {
                 itemType = extractShortId(item.type);
