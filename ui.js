@@ -60,6 +60,7 @@ const EXTERNAL_LINK_PREDICATE_META = Object.freeze({
   'urn:p-lod:id:en-wiki-url': { icon: 'WEN', label: 'Wikipedia (EN)' },
   'urn:p-lod:id:wiki-it-url': { icon: 'WIT', label: 'Wikipedia (IT)' },
   'urn:p-lod:id:p-in-p-url': { icon: 'PIP', label: 'Pompeii in Pictures' },
+  'urn:p-lod:id:manto-url': { icon: 'MANTO', label: 'Manto' },
   'urn:p-lod:id:getty-lod-url': { icon: 'GL', label: 'Getty LOD' },
 });
 
