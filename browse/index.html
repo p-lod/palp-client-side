@@ -3,14 +3,23 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PALP Browser (Testing)</title>
+  <title>PALP Browser</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" >
   <link rel="stylesheet" href="../style.css">
 </head>
 <body>
 
   <header id="header">
-    <span id="app-title">PALP Browser (Testing)</span>
+    <span id="home-icon">
+      <a href="/start/" aria-label="Home" title="Home">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M3 10.5L12 3l9 7.5"></path>
+          <path d="M5 9.5V21h14V9.5"></path>
+          <path d="M10 21v-6h4v6"></path>
+        </svg>
+      </a>
+    </span>
+    <span id="app-title">PALP Browser</span>
     <div id="search-bar">
       <input type="text" id="id-input" list="id-suggestions" placeholder="pompeii, athena, r4, …" autocomplete="off" spellcheck="false">
       <datalist id="id-suggestions"></datalist>
