@@ -77,11 +77,18 @@ body.has-image-modal {
 }
 
 #app-title {
+  white-space: nowrap;
+}
+
+#app-title,
+#p-lod-link a,
+#p-lod-link a:visited,
+#p-lod-link a:hover,
+#p-lod-link a:active {
   font-size: 0.95rem;
   font-weight: 700;
   letter-spacing: 0.05em;
-  white-space: nowrap;
-  color: #c8bfa8;
+  color: #d8cfbb;
 }
 
 #search-bar {
@@ -133,6 +140,18 @@ body.has-image-modal {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+#p-lod-link {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+#p-lod-link a,
+#p-lod-link a:visited,
+#p-lod-link a:hover,
+#p-lod-link a:active {
+  text-decoration: none;
 }
 
 /* ── 2×2 Grid ───────────────────────────────────────────────── */
