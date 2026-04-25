@@ -4339,7 +4339,7 @@ function canRenderHierarchyPinToggle(node) {
   return !!(node && node.urn);
 }
 
-function renderHierarchyLine(node, kind = 'ancestor') {
+function renderHierarchyNode(node, { kind = 'ancestor', previewUrn = '' } = {}) {
   const typeHtml = node.type ? `<span class="hierarchy-node-type">${escHtml(node.type)}</span>` : '';
   const pinHtml = canRenderHierarchyPinToggle(node)
     ? renderMapPinToggleButton({
@@ -4348,8 +4348,12 @@ function renderHierarchyLine(node, kind = 'ancestor') {
         contextClass: 'map-pin-toggle-hierarchy',
       })
     : '';
+  const previewAttrs = previewUrn
+    ? ` data-hierarchy-preview="${escAttr(previewUrn)}" tabindex="0"`
+    : '';
+  const previewClass = previewUrn ? ' hierarchy-node-preview' : '';
 
-  return `<div class="hierarchy-node hierarchy-node-${kind}">` +
+  return `<div class="hierarchy-node hierarchy-node-${kind}${previewClass}"${previewAttrs}>` +
          `<span class="hierarchy-node-main">` +
          `<span class="hierarchy-node-label">${escHtml(node.label)}</span>${typeHtml}</span>` +
          `<span class="hierarchy-node-actions">${pinHtml}` +
@@ -4358,13 +4362,16 @@ function renderHierarchyLine(node, kind = 'ancestor') {
          `</div>`;
 }
 
+function renderHierarchyLine(node, kind = 'ancestor') {
+  return renderHierarchyNode(node, { kind });
+}
+
 function renderHierarchyBranch(node, state) {
   const children = state.childrenByParentUrn.get(node.urn) || [];
   const isExpanded = state.expandedUrns.has(node.urn);
   const isLoading = state.loadingUrns.has(node.urn);
   const isLeaf = state.leafUrns.has(node.urn);
   const isCheckingChildPresence = state.checkingChildPresenceUrns.has(node.urn);
-  const typeHtml = node.type ? `<span class="hierarchy-node-type">${escHtml(node.type)}</span>` : '';
 
   let toggleHtml = '<span class="hierarchy-toggle hierarchy-toggle-spacer"></span>';
   if (isLoading || isCheckingChildPresence) {
@@ -4377,23 +4384,10 @@ function renderHierarchyBranch(node, state) {
     ? `<ul class="hierarchy-children">${children.map(child => renderHierarchyBranch(child, state)).join('')}</ul>`
     : '';
 
-  const pinHtml = canRenderHierarchyPinToggle(node)
-    ? renderMapPinToggleButton({
-        urn: node.urn,
-        shortLabel: extractShortId(node.urn),
-        contextClass: 'map-pin-toggle-hierarchy',
-      })
-    : '';
-
   return `<li class="hierarchy-item">` +
          `<div class="hierarchy-row">${toggleHtml}` +
-         `<button type="button" class="hierarchy-node hierarchy-node-child" data-hierarchy-preview="${escAttr(node.urn)}">` +
-      `<span class="hierarchy-node-main">` +
-      `<span class="hierarchy-node-label">${escHtml(node.label)}</span>${typeHtml}</span>` +
-      `<span class="hierarchy-node-actions">` +
-      pinHtml +
-      `<button type="button" class="hierarchy-go" data-hierarchy-go="${escAttr(node.urn)}" aria-label="Go to ${escAttr(extractShortId(node.urn))}" title="Go to ${escAttr(extractShortId(node.urn))}">↗</button>` +
-      `</span></button></div>${nestedHtml}</li>`;
+         renderHierarchyNode(node, { kind: 'child', previewUrn: node.urn }) +
+         `</div>${nestedHtml}</li>`;
 }
 
 function renderHierarchyState(slotEl, state) {

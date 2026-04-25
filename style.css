@@ -1309,12 +1309,12 @@ body.has-image-modal {
   gap: 0.24rem;
 }
 
-button.hierarchy-node {
+.hierarchy-node-preview {
   cursor: pointer;
 }
 
-button.hierarchy-node:hover,
-button.hierarchy-node:focus-visible {
+.hierarchy-node-preview:hover,
+.hierarchy-node-preview:focus-visible {
   border-color: #d0b185;
   background: #fff9ef;
   outline: none;
