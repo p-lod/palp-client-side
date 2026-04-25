@@ -398,6 +398,116 @@ function renderInfoEntityRowLoading(config) {
   );
 }
 
+const externalLinkPreviewState = {
+  isOpen: false,
+  eventsBound: false,
+  overlayEl: null,
+  dialogEl: null,
+  titleEl: null,
+  launchLinkEl: null,
+  iframeEl: null,
+  closeBtnEl: null,
+};
+
+function ensureExternalLinkPreviewInitialized() {
+  if (externalLinkPreviewState.overlayEl && document.body.contains(externalLinkPreviewState.overlayEl)) {
+    return;
+  }
+
+  const overlayEl = document.createElement('div');
+  overlayEl.className = 'external-link-modal-overlay';
+  overlayEl.hidden = true;
+  overlayEl.innerHTML =
+    '<div class="external-link-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="external-link-modal-title">' +
+      '<div class="external-link-modal-header">' +
+        '<div class="external-link-modal-title" id="external-link-modal-title">Link preview</div>' +
+        '<div class="external-link-modal-actions">' +
+          '<a class="external-link-modal-launch" href="#" target="_blank" rel="noopener noreferrer">Go to page</a>' +
+          '<button type="button" class="external-link-modal-close" aria-label="Close preview" title="Close preview">×</button>' +
+        '</div>' +
+      '</div>' +
+      '<iframe class="external-link-modal-iframe" src="about:blank" title="External page preview" loading="eager" referrerpolicy="no-referrer-when-downgrade"></iframe>' +
+    '</div>';
+
+  document.body.appendChild(overlayEl);
+
+  externalLinkPreviewState.overlayEl = overlayEl;
+  externalLinkPreviewState.dialogEl = overlayEl.querySelector('.external-link-modal-dialog');
+  externalLinkPreviewState.titleEl = overlayEl.querySelector('.external-link-modal-title');
+  externalLinkPreviewState.launchLinkEl = overlayEl.querySelector('.external-link-modal-launch');
+  externalLinkPreviewState.iframeEl = overlayEl.querySelector('.external-link-modal-iframe');
+  externalLinkPreviewState.closeBtnEl = overlayEl.querySelector('.external-link-modal-close');
+
+  if (!externalLinkPreviewState.eventsBound) {
+    externalLinkPreviewState.eventsBound = true;
+
+    overlayEl.addEventListener('click', e => {
+      if (e.target === overlayEl) closeExternalLinkPreview();
+    });
+
+    externalLinkPreviewState.closeBtnEl.addEventListener('click', () => {
+      closeExternalLinkPreview();
+    });
+
+    window.addEventListener('keydown', e => {
+      if (e.key !== 'Escape') return;
+      if (!externalLinkPreviewState.isOpen) return;
+      closeExternalLinkPreview();
+    });
+  }
+}
+
+function openExternalLinkPreview(url, label = '') {
+  const href = String(url || '').trim();
+  if (!href) return;
+
+  ensureExternalLinkPreviewInitialized();
+
+  const title = getDisplayLabelOrFallback(label, href);
+  externalLinkPreviewState.titleEl.textContent = title;
+  externalLinkPreviewState.launchLinkEl.href = href;
+  externalLinkPreviewState.iframeEl.src = href;
+  externalLinkPreviewState.overlayEl.hidden = false;
+  externalLinkPreviewState.overlayEl.classList.add('is-open');
+  externalLinkPreviewState.isOpen = true;
+}
+
+function closeExternalLinkPreview() {
+  if (!externalLinkPreviewState.overlayEl || !externalLinkPreviewState.isOpen) return;
+
+  externalLinkPreviewState.isOpen = false;
+  externalLinkPreviewState.overlayEl.classList.remove('is-open');
+  externalLinkPreviewState.overlayEl.hidden = true;
+  externalLinkPreviewState.iframeEl.src = 'about:blank';
+}
+
+function shouldInterceptExternalLinkPreviewClick(e) {
+  if (!e) return false;
+  if (e.defaultPrevented) return false;
+  if (e.button !== 0) return false;
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return false;
+  return true;
+}
+
+function bindInfoExternalLinkPreviewEvents(containerEl) {
+  if (!containerEl) return;
+
+  containerEl.querySelectorAll('.info-external-link').forEach(el => {
+    if (el.dataset.externalPreviewBound === '1') return;
+    el.dataset.externalPreviewBound = '1';
+
+    el.addEventListener('click', e => {
+      if (!shouldInterceptExternalLinkPreviewClick(e)) return;
+
+      const href = el.getAttribute('href') || '';
+      if (!href || href === '#') return;
+
+      e.preventDefault();
+      openExternalLinkPreview(href, el.getAttribute('aria-label') || el.getAttribute('title') || 'Link preview');
+    });
+  });
+}
+
 function bindInfoNavigationEvents(containerEl) {
   if (!containerEl) return;
 
@@ -4520,6 +4630,7 @@ async function renderInfo(triples, el, shortId = '', resourceProfile = 'default'
   el.innerHTML = html;
 
   bindInfoNavigationEvents(el);
+  bindInfoExternalLinkPreviewEvents(el);
   bindMapPinToggleButtons(el);
   loadInfoChipSectionsAsync({
     containerEl: el,

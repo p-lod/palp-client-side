@@ -310,6 +310,108 @@ body.has-image-modal {
   outline: none;
 }
 
+/* ── External link preview modal ────────────────────────────── */
+
+.external-link-modal-overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(20, 22, 24, 0.52);
+  z-index: 1250;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.external-link-modal-overlay.is-open {
+  opacity: 1;
+}
+
+.external-link-modal-overlay[hidden] {
+  display: none;
+}
+
+.external-link-modal-dialog {
+  width: min(92vw, 980px);
+  height: min(84vh, 700px);
+  min-width: 420px;
+  min-height: 280px;
+  border: 1px solid #c8c6bf;
+  border-radius: 10px;
+  background: #faf9f6;
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.24);
+  overflow: hidden;
+  resize: both;
+  display: flex;
+  flex-direction: column;
+}
+
+.external-link-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.65rem;
+  border-bottom: 1px solid #e1ddd3;
+  background: #f0ede7;
+}
+
+.external-link-modal-title {
+  font-size: 0.78rem;
+  color: #5d5d58;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.external-link-modal-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.external-link-modal-launch,
+.external-link-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 1.75rem;
+  padding: 0 0.6rem;
+  border: 1px solid #c8c6bf;
+  border-radius: 6px;
+  background: #fff;
+  color: #2d5c82;
+  font-size: 0.73rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.external-link-modal-close {
+  min-width: 1.75rem;
+  padding: 0;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.external-link-modal-launch:hover,
+.external-link-modal-launch:focus-visible,
+.external-link-modal-close:hover,
+.external-link-modal-close:focus-visible {
+  border-color: #8fb0cc;
+  background: #edf3f8;
+  color: #204d73;
+  outline: none;
+}
+
+.external-link-modal-iframe {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+
 .info-depicted-concepts-row,
 .info-depicted-where-row {
   display: grid;
