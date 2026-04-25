@@ -3,6 +3,7 @@
 const API_BASE   = 'https://api.p-lod.org';
 const DEFAULT_ID = 'urn:p-lod:id:pompeii';
 const POMPEIAN_WALL_PAINTING_STYLE_TYPE = 'urn:p-lod:id:pompeian-wall-painting-style';
+const SPACE_CHARACTERIZATION_TYPE = 'urn:p-lod:id:space-characterization';
 
 // Types that have spatial geometry and spatial children
 const SPATIAL_TYPES = new Set([
@@ -129,8 +130,16 @@ let currentResourceProfile = 'default';
 
 const PANE_EVENT_ENTITY_HIGHLIGHT = 'entity:highlight';
 const PANE_EVENT_ENTITY_CLEAR     = 'entity:clear';
+const PANE_EVENT_IMAGE_PREVIEW_REQUEST = 'images:preview-request';
+const PANE_EVENT_IMAGE_PREVIEW_CLEAR   = 'images:preview-clear';
 const UI_EVENT_IMAGE_MODAL_OPEN   = 'image-modal:open';
 const UI_EVENT_IMAGE_MODAL_CLOSE  = 'image-modal:close';
+
+const IMAGE_PANE_BEHAVIOR = Object.freeze({
+  SPATIAL_PRELOAD: 'spatial-preload',
+  CONCEPT_PRELOAD: 'concept-preload',
+  FEATURE_HOVER_PREVIEW: 'feature-hover-preview',
+});
 
 const paneEvents = (() => {
   const handlers = new Map();
@@ -410,6 +419,7 @@ function bindInfoActionableEntityRowInteractions(containerEl, config, resourcePr
 
   const shouldBindMapPreview =
     config.dataUrnAttribute === 'data-depicted-where-urn'
+    || config.dataUrnAttribute === 'data-geojson-feature-urn'
     || (resourceProfile === 'spatial' && config.dataUrnAttribute === 'data-depicted-concept-urn');
 
   bindInfoActionableEntityHoverEvents(
@@ -458,9 +468,102 @@ function createDepictedWhereInfoChipSectionConfig(shortId, rowClass = 'info-depi
   };
 }
 
-function getInfoChipSectionConfigs(shortId, resourceProfile, resourceTypeUrn = '') {
+function isSyntheticGeoJsonFeatureUrn(featureUrn, parentUrn = '') {
+  const urn = String(featureUrn || '').trim();
+  const parent = String(parentUrn || '').trim();
+  if (!urn) return true;
+  if (parent && urn.startsWith(`${parent}#feature-`)) return true;
+  return /#feature-\d+$/i.test(urn);
+}
+
+function getGeoJsonFeatureDisplayLabel(featureGeoJson, featureUrn) {
+  const props = featureGeoJson && typeof featureGeoJson === 'object' && featureGeoJson.properties
+    ? featureGeoJson.properties
+    : null;
+
+  const preferred = props
+    ? getDisplayLabelOrFallback(props.label || props.title || props.name || '', '')
+    : '';
+  if (preferred) {
+    if (preferred.startsWith('urn:p-lod:id:')) return extractShortId(preferred);
+    return preferred;
+  }
+
+  return extractShortId(featureUrn);
+}
+
+async function fetchGeoJsonFeatureItemsForInfo(entityUrn) {
+  if (!entityUrn) return [];
+
+  const normalizedFeatures = await ensurePinnedGeojsonFeatures(entityUrn);
+  if (!Array.isArray(normalizedFeatures) || !normalizedFeatures.length) return [];
+
+  const items = [];
+  const seen = new Set();
+  for (const feature of normalizedFeatures) {
+    const featureUrn = String((feature && feature.featureUrn) || '').trim();
+    if (!featureUrn || seen.has(featureUrn)) continue;
+    if (isSyntheticGeoJsonFeatureUrn(featureUrn, entityUrn)) continue;
+    seen.add(featureUrn);
+
+    items.push({
+      urn: featureUrn,
+      label: getGeoJsonFeatureDisplayLabel(feature.featureGeoJson, featureUrn),
+      within: extractShortId(entityUrn),
+    });
+  }
+
+  return items;
+}
+
+function createGeoJsonFeaturesInfoChipSectionConfig(entityUrn) {
+  return {
+    rowClass: 'info-geojson-features-row',
+    rowSelector: '.info-geojson-features-row',
+    labelClass: 'info-depicted-where-label',
+    listClass: 'info-depicted-where',
+    itemClass: 'info-depicted-entity-chip info-location-chip',
+    sectionLabel: 'Features',
+    dataUrnAttribute: 'data-geojson-feature-urn',
+    enablePin: true,
+    pinContextClass: 'map-pin-toggle-info',
+    fetcher: () => fetchGeoJsonFeatureItemsForInfo(entityUrn),
+  };
+}
+
+async function fetchGeoJsonFeatureHierarchySeedNodes(entityUrn) {
+  if (!entityUrn) return [];
+
+  const normalizedFeatures = await ensurePinnedGeojsonFeatures(entityUrn);
+  if (!Array.isArray(normalizedFeatures) || !normalizedFeatures.length) return [];
+
+  const nodes = [];
+  const seen = new Set();
+  for (const feature of normalizedFeatures) {
+    const featureUrn = String((feature && feature.featureUrn) || '').trim();
+    if (!featureUrn || seen.has(featureUrn)) continue;
+    if (isSyntheticGeoJsonFeatureUrn(featureUrn, entityUrn)) continue;
+    seen.add(featureUrn);
+
+    nodes.push({
+      urn: featureUrn,
+      label: getGeoJsonFeatureDisplayLabel(feature.featureGeoJson, featureUrn),
+      type: 'geojson-feature',
+      geojson: feature.featureGeoJson || null,
+    });
+  }
+
+  return nodes;
+}
+
+function getInfoChipSectionConfigs(shortId, resourceProfile, resourceTypeUrn = '', entityUrn = '') {
   if (!shortId) return [];
   const isWallPaintingStyle = resourceTypeUrn === POMPEIAN_WALL_PAINTING_STYLE_TYPE;
+  const isSpaceCharacterization = resourceTypeUrn === SPACE_CHARACTERIZATION_TYPE;
+
+  if (isSpaceCharacterization && entityUrn) {
+    return [createGeoJsonFeaturesInfoChipSectionConfig(entityUrn)];
+  }
 
   if (resourceProfile === 'spatial') {
     const sectionConfigs = [createDepictedConceptsInfoChipSectionConfig(shortId)];
@@ -518,7 +621,7 @@ function hydrateInfoChipSectionRow(containerEl, sectionConfig, items, resourcePr
 }
 
 function loadInfoChipSectionsAsync({ containerEl, shortId, resourceProfile, resourceTypeUrn = '', entityUrn }) {
-  const sectionConfigs = getInfoChipSectionConfigs(shortId, resourceProfile, resourceTypeUrn);
+  const sectionConfigs = getInfoChipSectionConfigs(shortId, resourceProfile, resourceTypeUrn, entityUrn);
   if (!containerEl || !sectionConfigs.length) return;
 
   const requestToken = ++infoChipSectionHydrationToken;
@@ -633,6 +736,95 @@ function parseGeoJson(gjStr) {
   } catch (_) {
     return null;
   }
+}
+
+const GEOJSON_FEATURE_URN_PROPERTY_KEYS = Object.freeze([
+  'urn',
+  'feature_urn',
+  'featureUrn',
+  'entity_urn',
+  'entityUrn',
+  'p_lod_id',
+  'id',
+]);
+
+function normalizeGeoJsonFeatureUrnCandidate(rawUrn) {
+  const value = String(rawUrn || '').trim();
+  if (!value || value === 'None') return '';
+
+  if (value.startsWith('urn:p-lod:id:')) return value;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) return '';
+
+  return normalizeId(value);
+}
+
+function resolveGeoJsonFeatureUrn(feature, fallbackUrn, index) {
+  if (feature && typeof feature === 'object') {
+    const fromId = normalizeGeoJsonFeatureUrnCandidate(feature.id);
+    if (fromId) return fromId;
+
+    const props = (feature.properties && typeof feature.properties === 'object')
+      ? feature.properties
+      : null;
+    if (props) {
+      for (const key of GEOJSON_FEATURE_URN_PROPERTY_KEYS) {
+        const candidate = normalizeGeoJsonFeatureUrnCandidate(props[key]);
+        if (candidate) return candidate;
+      }
+    }
+  }
+
+  const base = normalizeGeoJsonFeatureUrnCandidate(fallbackUrn);
+  if (!base) return '';
+  return `${base}#feature-${index + 1}`;
+}
+
+function normalizeGeoJsonFeatures(gjInput, options = {}) {
+  const { fallbackUrn = '' } = options;
+  const parsed = parseGeoJson(gjInput);
+  if (!parsed || typeof parsed !== 'object') return [];
+
+  let sourceFeatures = [];
+  if (parsed.type === 'FeatureCollection' && Array.isArray(parsed.features)) {
+    sourceFeatures = parsed.features;
+  } else if (parsed.type === 'Feature') {
+    sourceFeatures = [parsed];
+  } else if (parsed.type) {
+    sourceFeatures = [{ type: 'Feature', geometry: parsed, properties: {} }];
+  }
+
+  const normalized = [];
+  const seenFeatureUrns = new Set();
+
+  for (let i = 0; i < sourceFeatures.length; i++) {
+    const feature = sourceFeatures[i];
+    if (!feature || typeof feature !== 'object') continue;
+
+    const geometry = feature.geometry || null;
+    if (!geometry || typeof geometry !== 'object') continue;
+
+    const featureUrn = resolveGeoJsonFeatureUrn(feature, fallbackUrn, i);
+    if (!featureUrn || seenFeatureUrns.has(featureUrn)) continue;
+    seenFeatureUrns.add(featureUrn);
+
+    const normalizedFeature = {
+      type: 'Feature',
+      geometry,
+      properties: {
+        ...((feature.properties && typeof feature.properties === 'object') ? feature.properties : {}),
+      },
+    };
+    if (feature.id !== undefined && feature.id !== null && feature.id !== '') {
+      normalizedFeature.id = feature.id;
+    }
+
+    normalized.push({
+      featureUrn,
+      featureGeoJson: normalizedFeature,
+    });
+  }
+
+  return normalized;
 }
 
 function debounce(fn, waitMs) {
@@ -943,8 +1135,17 @@ function fetchEntityImages(shortId) {
     .catch(() => []);
 }
 
-async function buildSpatialSelfMapItem(entityUrn, shortId, label, selfGjStr) {
-  let gjStr = selfGjStr;
+function renderImagePaneHoverPreviewHint(slotEl) {
+  if (!slotEl) return;
+  slotEl.innerHTML = '<p class="placeholder">Hover over a map feature to load images for that feature.</p>';
+}
+
+function extractEndpointShortId(urn) {
+  return extractShortId(urn).replace(/#.*$/, '');
+}
+
+async function buildSpatialSelfMapItem(entityUrn, shortId, label, selfGjStr, forceGeojsonEndpoint = false) {
+  let gjStr = forceGeojsonEndpoint ? null : selfGjStr;
   if (!gjStr) {
     try {
       const r = await fetch(`${API_BASE}/geojson/${encodeURIComponent(shortId)}`);
@@ -960,13 +1161,17 @@ function createResourceHandler({
   key,
   profile,
   isSpatial = false,
+  imagesPaneBehavior = IMAGE_PANE_BEHAVIOR.CONCEPT_PRELOAD,
   promoteSelfGeometryToPrimaryLayer = false,
   spatialMapSource = 'spatial-children',
+  forceSelfGeojsonFromEndpoint = false,
+  hierarchySeedSource = 'none',
 }) {
   return Object.freeze({
     key,
     profile,
     isSpatial,
+    imagesPaneBehavior,
     promoteSelfGeometryToPrimaryLayer,
     resolvePaneLayout(overrideLayout) {
       if (overrideLayout) {
@@ -986,11 +1191,18 @@ function createResourceHandler({
     getHierarchyProfile() {
       return profile === 'concept' || profile === 'spatial' ? profile : null;
     },
+    getHierarchySeedNodes(currentNode) {
+      if (hierarchySeedSource !== 'geojson-features') return Promise.resolve([]);
+      return fetchGeoJsonFeatureHierarchySeedNodes(currentNode && currentNode.urn ? currentNode.urn : '');
+    },
     getImagesPromise(shortId) {
-      return isSpatial ? fetchEntityImages(shortId) : Promise.resolve(null);
+      if (imagesPaneBehavior === IMAGE_PANE_BEHAVIOR.CONCEPT_PRELOAD) return Promise.resolve(null);
+      if (imagesPaneBehavior === IMAGE_PANE_BEHAVIOR.FEATURE_HOVER_PREVIEW) return Promise.resolve([]);
+      return fetchEntityImages(shortId);
     },
     getMapDataPromise(shortId) {
       if (isSpatial) {
+        if (spatialMapSource === 'none') return Promise.resolve([]);
         return spatialMapSource === 'depicted-where-fallback'
           ? fetchDepictedWhereWithSpaceFallback(shortId)
           : fetchSpatialChildren(shortId);
@@ -1019,34 +1231,85 @@ function createResourceHandler({
       };
     },
     renderImagesPane({ bestImageUrns, imagesResult, childItems, slotEl, entityUrn }) {
-      if (isSpatial) {
-        const mergedImages = mergePriorityImages(bestImageUrns, imagesResult || [], entityUrn);
-        renderImages(mergedImages, slotEl, entityUrn);
+      if (imagesPaneBehavior === IMAGE_PANE_BEHAVIOR.CONCEPT_PRELOAD) {
+        setImagePaneContext({
+          behavior: imagesPaneBehavior,
+          entityUrn,
+          slotEl,
+          renderBase: () => renderConceptImages(childItems, slotEl, bestImageUrns, entityUrn),
+        });
         return;
       }
 
-      renderConceptImages(childItems, slotEl, bestImageUrns, entityUrn);
+      if (imagesPaneBehavior === IMAGE_PANE_BEHAVIOR.FEATURE_HOVER_PREVIEW) {
+        setImagePaneContext({
+          behavior: imagesPaneBehavior,
+          entityUrn,
+          slotEl,
+          renderBase: () => renderImagePaneHoverPreviewHint(slotEl),
+        });
+        return;
+      }
+
+      const mergedImages = mergePriorityImages(bestImageUrns, imagesResult || [], entityUrn);
+      setImagePaneContext({
+        behavior: imagesPaneBehavior,
+        entityUrn,
+        slotEl,
+        renderBase: () => renderImages(mergedImages, slotEl, entityUrn),
+      });
     },
     buildSelfMapItem(entityUrn, shortId, label, selfGjStr) {
       if (!isSpatial) return Promise.resolve(null);
-      return buildSpatialSelfMapItem(entityUrn, shortId, label, selfGjStr);
+      return buildSpatialSelfMapItem(
+        entityUrn,
+        shortId,
+        label,
+        selfGjStr,
+        forceSelfGeojsonFromEndpoint
+      );
     },
   });
 }
 
-const DEFAULT_RESOURCE_HANDLER = createResourceHandler({ key: 'default', profile: 'default' });
-const CONCEPT_RESOURCE_HANDLER = createResourceHandler({ key: 'concept', profile: 'concept' });
-const SPATIAL_RESOURCE_HANDLER = createResourceHandler({ key: 'spatial', profile: 'spatial', isSpatial: true });
+const DEFAULT_RESOURCE_HANDLER = createResourceHandler({
+  key: 'default',
+  profile: 'default',
+  imagesPaneBehavior: IMAGE_PANE_BEHAVIOR.CONCEPT_PRELOAD,
+});
+const CONCEPT_RESOURCE_HANDLER = createResourceHandler({
+  key: 'concept',
+  profile: 'concept',
+  imagesPaneBehavior: IMAGE_PANE_BEHAVIOR.CONCEPT_PRELOAD,
+});
+const SPATIAL_RESOURCE_HANDLER = createResourceHandler({
+  key: 'spatial',
+  profile: 'spatial',
+  isSpatial: true,
+  imagesPaneBehavior: IMAGE_PANE_BEHAVIOR.SPATIAL_PRELOAD,
+});
 const WALL_PAINTING_STYLE_RESOURCE_HANDLER = createResourceHandler({
   key: 'pompeian-wall-painting-style',
   profile: 'spatial',
   isSpatial: true,
+  imagesPaneBehavior: IMAGE_PANE_BEHAVIOR.SPATIAL_PRELOAD,
   promoteSelfGeometryToPrimaryLayer: true,
   spatialMapSource: 'depicted-where-fallback',
+});
+const SPACE_CHARACTERIZATION_RESOURCE_HANDLER = createResourceHandler({
+  key: 'space-characterization',
+  profile: 'spatial',
+  isSpatial: true,
+  imagesPaneBehavior: IMAGE_PANE_BEHAVIOR.FEATURE_HOVER_PREVIEW,
+  promoteSelfGeometryToPrimaryLayer: true,
+  spatialMapSource: 'none',
+  forceSelfGeojsonFromEndpoint: true,
+  hierarchySeedSource: 'geojson-features',
 });
 
 const RESOURCE_TYPE_HANDLERS = Object.freeze({
   [POMPEIAN_WALL_PAINTING_STYLE_TYPE]: WALL_PAINTING_STYLE_RESOURCE_HANDLER,
+  [SPACE_CHARACTERIZATION_TYPE]: SPACE_CHARACTERIZATION_RESOURCE_HANDLER,
 });
 
 const RESOURCE_FAMILY_HANDLERS = Object.freeze({
@@ -1238,7 +1501,10 @@ function initDividerDrag() {
 let leafletMap  = null;
 let layerGroup  = null;
 let mapContainerEl = null;
-let layersByEntityUrn = new Map();   // URN → { layer, defaultStyle } for hover linkage
+let layersByEntityUrn = new Map();   // URN → { layers, boundsLayer, defaultStyle } for hover linkage
+let mapFeatureOwnerUrnByFeatureUrn = new Map(); // featureUrn -> owner entity/layer URN
+let geojsonFeaturePayloadByUrn = new Map(); // featureUrn -> normalized GeoJSON Feature payload
+let geojsonFeatureUrnsByPinUrn = new Map(); // pinUrn -> Set<featureUrn>
 let spatialHoverCache = new Map();  // featureUrn → resolved layerUrn|null, cleared on navigation
 let ancestorByEntityUrnCache = new Map();  // entityUrn → ancestorUrn|null
 let ancestorOutlineLayerCache = new Map(); // ancestorUrn → Leaflet layer
@@ -1266,11 +1532,21 @@ let infoChipPreviewClearTimeoutId = null;
 let activeInfoChipPreviewChipEl = null;
 let infoChipPreviewGeoJsonCache = new Map();
 let pendingInfoChipPreviewGeoJsonByUrn = new Map();
-let pinnedGeojsonUrns = new Set();
-let pinnedGeojsonLayerByUrn = new Map();
-let pinnedGeojsonCacheByUrn = new Map();
-let pendingPinnedGeojsonByUrn = new Map();
+let pinnedGeojsonUrns = new Set(); // pin target URNs as used by UI controls
+let pinnedGeojsonLayerByUrn = new Map(); // featureUrn -> Leaflet layer
+let pinnedGeojsonFeatureUrnsByPinUrn = new Map(); // pinUrn -> Set<featureUrn>
+let pinnedGeojsonCacheByUrn = new Map(); // pinUrn -> normalized features [{ featureUrn, featureGeoJson }]
+let pendingPinnedGeojsonByUrn = new Map(); // pinUrn -> Promise<normalizedFeatures[]>
 let pinnedGeojsonRequestToken = 0;
+let currentImagePaneBehavior = IMAGE_PANE_BEHAVIOR.CONCEPT_PRELOAD;
+let currentImagePaneEntityUrn = '';
+let currentImagePaneSlotEl = null;
+let currentImagePaneBaseRenderer = null;
+let imagePanePreviewActiveUrn = '';
+let imagePanePreviewIntentTimeoutId = null;
+let imagePanePreviewRenderToken = 0;
+let imagePanePreviewImagesCacheByUrn = new Map();
+let pendingImagePanePreviewImagesByUrn = new Map();
 let suppressMapToImageHighlight = false;
 let imageHoverIntentTimeoutByEl = new WeakMap();
 const imageModalState = {
@@ -1496,6 +1772,123 @@ function clearImageAssociations() {
   firstImageElByEntityUrn.clear();
   clearActiveMapHoverImage();
   invalidateImageModalSequence();
+}
+
+function clearImagePanePreviewIntentTimeout() {
+  if (!imagePanePreviewIntentTimeoutId) return;
+  clearTimeout(imagePanePreviewIntentTimeoutId);
+  imagePanePreviewIntentTimeoutId = null;
+}
+
+function setImagePaneContext({ behavior, entityUrn, slotEl, renderBase }) {
+  imagePanePreviewRenderToken += 1;
+  clearImagePanePreviewIntentTimeout();
+  imagePanePreviewActiveUrn = '';
+
+  currentImagePaneBehavior = behavior || IMAGE_PANE_BEHAVIOR.CONCEPT_PRELOAD;
+  currentImagePaneEntityUrn = String(entityUrn || '').trim();
+  currentImagePaneSlotEl = slotEl || null;
+  currentImagePaneBaseRenderer = typeof renderBase === 'function' ? renderBase : null;
+
+  if (currentImagePaneBaseRenderer) currentImagePaneBaseRenderer();
+}
+
+function restoreImagePaneBaseContent() {
+  if (!currentImagePaneBaseRenderer) return;
+  currentImagePaneBaseRenderer();
+}
+
+function clearImagePanePreviewState(options = {}) {
+  const { clearCache = false, restoreBase = false } = options;
+
+  imagePanePreviewRenderToken += 1;
+  clearImagePanePreviewIntentTimeout();
+  imagePanePreviewActiveUrn = '';
+
+  if (restoreBase) restoreImagePaneBaseContent();
+  if (clearCache) {
+    imagePanePreviewImagesCacheByUrn.clear();
+    pendingImagePanePreviewImagesByUrn.clear();
+  }
+}
+
+async function ensureImagePanePreviewImages(featureUrn) {
+  if (!featureUrn) return [];
+  if (imagePanePreviewImagesCacheByUrn.has(featureUrn)) {
+    return imagePanePreviewImagesCacheByUrn.get(featureUrn) || [];
+  }
+  if (pendingImagePanePreviewImagesByUrn.has(featureUrn)) {
+    return pendingImagePanePreviewImagesByUrn.get(featureUrn);
+  }
+
+  const pending = (async () => {
+    try {
+      const shortId = extractEndpointShortId(featureUrn);
+      if (!shortId) {
+        imagePanePreviewImagesCacheByUrn.set(featureUrn, []);
+        return [];
+      }
+
+      const images = await fetchEntityImages(shortId);
+      const normalized = Array.isArray(images)
+        ? images.map(item => (item && typeof item === 'object'
+          ? { ...item, feature: item.feature || featureUrn }
+          : item))
+        : [];
+
+      imagePanePreviewImagesCacheByUrn.set(featureUrn, normalized);
+      return normalized;
+    } catch (_) {
+      imagePanePreviewImagesCacheByUrn.set(featureUrn, []);
+      return [];
+    } finally {
+      pendingImagePanePreviewImagesByUrn.delete(featureUrn);
+    }
+  })();
+
+  pendingImagePanePreviewImagesByUrn.set(featureUrn, pending);
+  return pending;
+}
+
+function requestImagePaneFeaturePreview(featureUrn) {
+  if (currentImagePaneBehavior !== IMAGE_PANE_BEHAVIOR.FEATURE_HOVER_PREVIEW) return;
+  if (!featureUrn || !currentImagePaneSlotEl || !currentImagePaneEntityUrn) return;
+  if (isSyntheticGeoJsonFeatureUrn(featureUrn, currentImagePaneEntityUrn)) return;
+
+  clearImagePanePreviewIntentTimeout();
+  const token = ++imagePanePreviewRenderToken;
+
+  imagePanePreviewIntentTimeoutId = setTimeout(() => {
+    imagePanePreviewIntentTimeoutId = null;
+    if (token !== imagePanePreviewRenderToken) return;
+
+    imagePanePreviewActiveUrn = featureUrn;
+    if (currentImagePaneSlotEl) {
+      currentImagePaneSlotEl.innerHTML = '<p class="loading">Loading feature images…</p>';
+    }
+
+    void ensureImagePanePreviewImages(featureUrn).then(images => {
+      if (token !== imagePanePreviewRenderToken) return;
+      if (imagePanePreviewActiveUrn !== featureUrn) return;
+
+      const mergedImages = mergePriorityImages([], images || [], featureUrn);
+      renderImages(mergedImages, currentImagePaneSlotEl, currentImagePaneEntityUrn);
+    });
+  }, IMAGE_HOVER_INTENT_DELAY_MS);
+}
+
+function clearImagePaneFeaturePreview() {
+  if (currentImagePaneBehavior !== IMAGE_PANE_BEHAVIOR.FEATURE_HOVER_PREVIEW) return;
+  clearImagePanePreviewState({ restoreBase: true });
+}
+
+function cancelImagePaneFeaturePreviewRequest() {
+  if (currentImagePaneBehavior !== IMAGE_PANE_BEHAVIOR.FEATURE_HOVER_PREVIEW) return;
+
+  // Keep the currently rendered preview in place so users can move into the
+  // image pane and interact; only cancel the pending hover-intent request.
+  imagePanePreviewRenderToken += 1;
+  clearImagePanePreviewIntentTimeout();
 }
 
 function normalizeImageModalPayload(payload = {}, { requireImageUrl = true } = {}) {
@@ -2958,19 +3351,19 @@ function shouldRunFarZoomAttentionPulse(source) {
 }
 
 function runFarZoomAttentionPulse(urn, entry) {
-  if (!entry || !entry.layer) return;
+  if (!entry || !Array.isArray(entry.layers) || !entry.layers.length) return;
 
   cancelAttentionPulseForUrn(urn);
 
-  entry.layer.setStyle({ ...HIGHLIGHT_STYLE, color: '#ffe066', weight: 12, fillOpacity: 0.85 });
+  entry.layers.forEach(layer => layer.setStyle({ ...HIGHLIGHT_STYLE, color: '#ffe066', weight: 12, fillOpacity: 0.85 }));
 
   const timeoutId = setTimeout(() => {
     if (currentHoveredEntityUrn !== urn) return;
-    entry.layer.setStyle({ ...HIGHLIGHT_STYLE, color: '#ffb300', weight: 8, fillOpacity: 0.68 });
+    entry.layers.forEach(layer => layer.setStyle({ ...HIGHLIGHT_STYLE, color: '#ffb300', weight: 8, fillOpacity: 0.68 }));
 
     const settleTimeoutId = setTimeout(() => {
       if (currentHoveredEntityUrn !== urn) return;
-      entry.layer.setStyle(HIGHLIGHT_STYLE);
+      entry.layers.forEach(layer => layer.setStyle(HIGHLIGHT_STYLE));
       attentionPulseTimeoutByUrn.delete(urn);
     }, 140);
 
@@ -3120,7 +3513,11 @@ function clearMapLayers() {
   }
   if (mapFocusHintEl) mapFocusHintEl.classList.remove('is-visible');
   if (layerGroup) layerGroup.clearLayers();
+  clearImagePanePreviewState({ restoreBase: false });
   layersByEntityUrn.clear();
+  mapFeatureOwnerUrnByFeatureUrn.clear();
+  geojsonFeaturePayloadByUrn.clear();
+  geojsonFeatureUrnsByPinUrn.clear();
   spatialHoverCache.clear();
   ancestorByEntityUrnCache.clear();
   ancestorOutlineLayerCache.clear();
@@ -3161,15 +3558,62 @@ function clearInfoChipMapPreview(options = {}) {
   }
 }
 
-function isMapGeojsonPinned(urn) {
-  return !!urn && pinnedGeojsonUrns.has(urn);
+function getCanonicalMapPinUrn(rawUrn) {
+  const urn = String(rawUrn || '').trim();
+  if (!urn) return '';
+
+  // Already a known feature URN: keep it as the canonical target.
+  if (geojsonFeaturePayloadByUrn.has(urn)) return urn;
+
+  // If this URN maps to exactly one feature, canonicalize to that feature URN.
+  const featureUrns = getGeoJsonFeatureUrnsForPinUrn(urn);
+  if (featureUrns.length === 1) return featureUrns[0];
+
+  return urn;
 }
 
-function removePinnedGeojsonLayer(urn) {
-  const layer = pinnedGeojsonLayerByUrn.get(urn);
+function isMapGeojsonPinned(rawUrn) {
+  const canonicalUrn = getCanonicalMapPinUrn(rawUrn);
+  if (!canonicalUrn) return false;
+
+  if (pinnedGeojsonUrns.has(canonicalUrn)) return true;
+
+  // Keep legacy toggle behavior coherent when a parent/group URN is pinned.
+  if (canonicalUrn !== rawUrn && pinnedGeojsonUrns.has(String(rawUrn || '').trim())) {
+    return true;
+  }
+
+  return false;
+}
+
+function registerGeoJsonFeatureUrn(pinUrn, featureUrn) {
+  if (!pinUrn || !featureUrn) return;
+
+  if (!geojsonFeatureUrnsByPinUrn.has(pinUrn)) {
+    geojsonFeatureUrnsByPinUrn.set(pinUrn, new Set());
+  }
+  geojsonFeatureUrnsByPinUrn.get(pinUrn).add(featureUrn);
+}
+
+function getGeoJsonFeatureUrnsForPinUrn(pinUrn) {
+  const direct = geojsonFeatureUrnsByPinUrn.get(pinUrn);
+  if (!direct) return [];
+  return Array.from(direct.values());
+}
+
+function removePinnedGeojsonLayer(featureUrn) {
+  const layer = pinnedGeojsonLayerByUrn.get(featureUrn);
   if (!layer) return;
   if (layerGroup && layerGroup.hasLayer(layer)) layerGroup.removeLayer(layer);
-  pinnedGeojsonLayerByUrn.delete(urn);
+  pinnedGeojsonLayerByUrn.delete(featureUrn);
+}
+
+function removePinnedGeojsonLayersForPinUrn(pinUrn) {
+  const featureUrns = pinnedGeojsonFeatureUrnsByPinUrn.get(pinUrn);
+  if (!featureUrns || !featureUrns.size) return;
+
+  featureUrns.forEach(featureUrn => removePinnedGeojsonLayer(featureUrn));
+  pinnedGeojsonFeatureUrnsByPinUrn.delete(pinUrn);
 }
 
 function bringPinnedGeojsonLayersToFront() {
@@ -3189,98 +3633,155 @@ function clearPinnedGeojsonState(options = {}) {
 
   pinnedGeojsonUrns.clear();
   pinnedGeojsonLayerByUrn.clear();
+  pinnedGeojsonFeatureUrnsByPinUrn.clear();
   pendingPinnedGeojsonByUrn.clear();
   if (clearCache) pinnedGeojsonCacheByUrn.clear();
   refreshMapPinToggleButtons();
 }
 
-function setMapGeojsonPinState(urn, shouldPin) {
-  if (!urn) return;
+function setMapGeojsonPinState(rawPinUrn, shouldPin) {
+  const pinUrn = getCanonicalMapPinUrn(rawPinUrn);
+  if (!pinUrn) return;
 
   if (shouldPin) {
-    pinnedGeojsonUrns.add(urn);
+    pinnedGeojsonUrns.add(pinUrn);
   } else {
-    pinnedGeojsonUrns.delete(urn);
-    removePinnedGeojsonLayer(urn);
+    pinnedGeojsonUrns.delete(pinUrn);
+    removePinnedGeojsonLayersForPinUrn(pinUrn);
   }
 
-  refreshMapPinToggleButtons(urn);
+  refreshMapPinToggleButtons(rawPinUrn);
+  if (pinUrn !== rawPinUrn) refreshMapPinToggleButtons(pinUrn);
 }
 
-async function ensurePinnedGeojsonPayload(urn) {
-  if (!urn) return null;
-  if (pinnedGeojsonCacheByUrn.has(urn)) return pinnedGeojsonCacheByUrn.get(urn);
-  if (pendingPinnedGeojsonByUrn.has(urn)) return pendingPinnedGeojsonByUrn.get(urn);
+function cachePinnedGeojsonFeatures(pinUrn, normalizedFeatures) {
+  const features = Array.isArray(normalizedFeatures) ? normalizedFeatures : [];
+  pinnedGeojsonCacheByUrn.set(pinUrn, features);
+
+  const featureUrns = new Set();
+  for (const feature of features) {
+    if (!feature || !feature.featureUrn || !feature.featureGeoJson) continue;
+    featureUrns.add(feature.featureUrn);
+    geojsonFeaturePayloadByUrn.set(feature.featureUrn, feature.featureGeoJson);
+    registerGeoJsonFeatureUrn(pinUrn, feature.featureUrn);
+    registerGeoJsonFeatureUrn(feature.featureUrn, feature.featureUrn);
+  }
+
+  return features;
+}
+
+async function ensurePinnedGeojsonFeatures(rawPinUrn) {
+  const pinUrn = getCanonicalMapPinUrn(rawPinUrn);
+  if (!pinUrn) return [];
+  if (pinnedGeojsonCacheByUrn.has(pinUrn)) return pinnedGeojsonCacheByUrn.get(pinUrn);
+  if (pendingPinnedGeojsonByUrn.has(pinUrn)) return pendingPinnedGeojsonByUrn.get(pinUrn);
+
+  // Canonical feature URN can be fulfilled from the in-memory feature payload cache.
+  if (geojsonFeaturePayloadByUrn.has(pinUrn)) {
+    return cachePinnedGeojsonFeatures(pinUrn, [{
+      featureUrn: pinUrn,
+      featureGeoJson: geojsonFeaturePayloadByUrn.get(pinUrn),
+    }]);
+  }
+
+  const knownFeatureUrns = getGeoJsonFeatureUrnsForPinUrn(pinUrn);
+  if (knownFeatureUrns.length) {
+    const knownFeatures = knownFeatureUrns
+      .map(featureUrn => ({
+        featureUrn,
+        featureGeoJson: geojsonFeaturePayloadByUrn.get(featureUrn) || null,
+      }))
+      .filter(feature => !!feature.featureGeoJson);
+
+    if (knownFeatures.length) {
+      return cachePinnedGeojsonFeatures(pinUrn, knownFeatures);
+    }
+  }
 
   const pending = (async () => {
     try {
-      const shortId = extractShortId(urn);
+      const shortId = extractShortId(pinUrn);
       const r = await fetch(`${API_BASE}/geojson/${encodeURIComponent(shortId)}`);
-      if (!r.ok) return null;
+      if (!r.ok) return cachePinnedGeojsonFeatures(pinUrn, []);
 
       const payload = await r.json();
       const geojson = payload && payload.geojson ? payload.geojson : payload;
-      pinnedGeojsonCacheByUrn.set(urn, geojson || null);
-      return geojson || null;
+      const normalized = normalizeGeoJsonFeatures(geojson, { fallbackUrn: pinUrn });
+      return cachePinnedGeojsonFeatures(pinUrn, normalized);
     } catch (_) {
-      pinnedGeojsonCacheByUrn.set(urn, null);
-      return null;
+      return cachePinnedGeojsonFeatures(pinUrn, []);
     } finally {
-      pendingPinnedGeojsonByUrn.delete(urn);
+      pendingPinnedGeojsonByUrn.delete(pinUrn);
     }
   })();
 
-  pendingPinnedGeojsonByUrn.set(urn, pending);
+  pendingPinnedGeojsonByUrn.set(pinUrn, pending);
   return pending;
 }
 
-async function ensurePinnedGeojsonLayerForUrn(urn) {
-  if (!urn || !leafletMap || !layerGroup) return null;
-  if (!isMapGeojsonPinned(urn)) return null;
+function ensurePinnedGeojsonLayerForFeature(featureUrn, featureGeoJson) {
+  if (!featureUrn || !featureGeoJson || !layerGroup) return null;
 
-  const existing = pinnedGeojsonLayerByUrn.get(urn);
+  const existing = pinnedGeojsonLayerByUrn.get(featureUrn);
   if (existing) {
     if (!layerGroup.hasLayer(existing)) existing.addTo(layerGroup);
     existing.bringToFront();
     return existing;
   }
 
-  const requestToken = pinnedGeojsonRequestToken;
-  const geojsonData = await ensurePinnedGeojsonPayload(urn);
-  if (requestToken !== pinnedGeojsonRequestToken) return null;
-  if (!isMapGeojsonPinned(urn)) return null;
-
-  const parsed = parseGeoJson(geojsonData);
-  if (!parsed || !layerGroup) return null;
-
-  const layer = L.geoJSON(parsed, {
+  const layer = L.geoJSON(featureGeoJson, {
     style: { ...PINNED_GEOJSON_STYLE, className: 'plod-pinned-geojson' },
     interactive: false,
   }).addTo(layerGroup);
   layer.bringToFront();
-  pinnedGeojsonLayerByUrn.set(urn, layer);
+  pinnedGeojsonLayerByUrn.set(featureUrn, layer);
   return layer;
 }
 
-async function toggleMapGeojsonPin(urn) {
-  if (!urn) return;
+async function ensurePinnedGeojsonLayerForUrn(rawPinUrn) {
+  const pinUrn = getCanonicalMapPinUrn(rawPinUrn);
+  if (!pinUrn || !leafletMap || !layerGroup) return [];
+  if (!isMapGeojsonPinned(pinUrn)) return [];
 
-  const shouldPin = !isMapGeojsonPinned(urn);
-  setMapGeojsonPinState(urn, shouldPin);
+  const requestToken = pinnedGeojsonRequestToken;
+  const features = await ensurePinnedGeojsonFeatures(pinUrn);
+  if (requestToken !== pinnedGeojsonRequestToken) return [];
+  if (!isMapGeojsonPinned(pinUrn)) return [];
+
+  const featureUrns = new Set();
+  const layers = [];
+  for (const feature of features) {
+    if (!feature || !feature.featureUrn || !feature.featureGeoJson) continue;
+    featureUrns.add(feature.featureUrn);
+    const layer = ensurePinnedGeojsonLayerForFeature(feature.featureUrn, feature.featureGeoJson);
+    if (layer) layers.push(layer);
+  }
+
+  pinnedGeojsonFeatureUrnsByPinUrn.set(pinUrn, featureUrns);
+
+  return layers;
+}
+
+async function toggleMapGeojsonPin(rawPinUrn) {
+  const pinUrn = getCanonicalMapPinUrn(rawPinUrn);
+  if (!pinUrn) return;
+
+  const shouldPin = !isMapGeojsonPinned(pinUrn);
+  setMapGeojsonPinState(pinUrn, shouldPin);
 
   if (!shouldPin) return;
 
-  if (hierarchyPreviewUrn === urn) clearHierarchyPreview();
-  if (infoChipPreviewUrn === urn) {
+  if (hierarchyPreviewUrn === pinUrn || hierarchyPreviewUrn === rawPinUrn) clearHierarchyPreview();
+  if (infoChipPreviewUrn === pinUrn || infoChipPreviewUrn === rawPinUrn) {
     clearInfoChipMapPreviewLayer();
     if (activeInfoChipPreviewChipEl) {
       bindInfoChipPreviewState(activeInfoChipPreviewChipEl, { isLoading: false, isActive: true });
     }
   }
 
-  const layer = await ensurePinnedGeojsonLayerForUrn(urn);
-  if (!layer) {
-    setMapGeojsonPinState(urn, false);
+  const layers = await ensurePinnedGeojsonLayerForUrn(pinUrn);
+  if (!layers.length) {
+    setMapGeojsonPinState(pinUrn, false);
     return;
   }
 
@@ -3526,6 +4027,7 @@ function normalizeHierarchyNode(item) {
     label,
     type,
     geojson: item.geojson || null,
+    canFetchChildren: item.canFetchChildren !== false,
   };
 }
 
@@ -3553,6 +4055,7 @@ function upsertHierarchyNode(state, node) {
     if (!existing.label && node.label) existing.label = node.label;
     if (!existing.type && node.type) existing.type = node.type;
     if (!existing.geojson && node.geojson) existing.geojson = node.geojson;
+    if (node.canFetchChildren === false) existing.canFetchChildren = false;
     return existing;
   }
 
@@ -3563,6 +4066,14 @@ function upsertHierarchyNode(state, node) {
 
 function recordHierarchyNodes(state, nodes) {
   return nodes.map(node => upsertHierarchyNode(state, node)).filter(Boolean);
+}
+
+function canHierarchyNodeFetchChildren(state, urn) {
+  if (!state || !urn) return false;
+  const node = state.nodeMetaByUrn.get(urn);
+  if (!node) return false;
+  if (node.canFetchChildren === false) return false;
+  return state.profile === 'concept' || state.profile === 'spatial';
 }
 
 async function fetchHierarchyItems(endpoint) {
@@ -3621,6 +4132,14 @@ function createHierarchyState(profile, currentNode, ancestors, children) {
     state.leafUrns.add(currentNode.urn);
   }
 
+  for (const node of normalizedChildren) {
+    if (!node || !node.urn) continue;
+    if (!canHierarchyNodeFetchChildren(state, node.urn)) {
+      state.leafUrns.add(node.urn);
+      state.childPresenceCheckedUrns.add(node.urn);
+    }
+  }
+
   queueHierarchyChildPresenceChecks(state, normalizedChildren);
   return state;
 }
@@ -3629,6 +4148,12 @@ async function probeHierarchyNodeChildPresence(state, urn) {
   if (!state || !urn) return;
   if (hierarchyState !== state) return;
   if (state.childPresenceCheckedUrns.has(urn) || state.checkingChildPresenceUrns.has(urn)) return;
+
+  if (!canHierarchyNodeFetchChildren(state, urn)) {
+    state.childPresenceCheckedUrns.add(urn);
+    state.leafUrns.add(urn);
+    return;
+  }
 
   if (state.childrenByParentUrn.has(urn)) {
     const knownChildren = state.childrenByParentUrn.get(urn) || [];
@@ -3667,12 +4192,14 @@ function queueHierarchyChildPresenceChecks(state, nodes) {
 
   for (const node of nodes) {
     if (!node || !node.urn) continue;
+    if (!canHierarchyNodeFetchChildren(state, node.urn)) continue;
     void probeHierarchyNodeChildPresence(state, node.urn);
   }
 }
 
-async function buildHierarchyState(profile, currentNode) {
+async function buildHierarchyState(profile, currentNode, options = {}) {
   if (!currentNode || !currentNode.urn) return null;
+  const seedChildren = Array.isArray(options.seedChildren) ? options.seedChildren : [];
 
   if (profile === 'concept') {
     const [ancestors, children] = await Promise.all([
@@ -3687,7 +4214,8 @@ async function buildHierarchyState(profile, currentNode) {
       fetchSpatialHierarchyAncestors(currentNode.urn),
       fetchSpatialHierarchyChildren(currentNode.urn),
     ]);
-    return createHierarchyState('spatial', currentNode, ancestors, children);
+    const initialChildren = seedChildren.length ? seedChildren : children;
+    return createHierarchyState('spatial', currentNode, ancestors, initialChildren);
   }
 
   return null;
@@ -3855,6 +4383,12 @@ async function toggleHierarchyNode(urn) {
   if (!hierarchyState || !urn) return;
 
   const state = hierarchyState;
+  if (!canHierarchyNodeFetchChildren(state, urn)) {
+    state.leafUrns.add(urn);
+    state.childPresenceCheckedUrns.add(urn);
+    rerenderHierarchy();
+    return;
+  }
 
   if (state.loadingUrns.has(urn)) return;
   if (state.childrenByParentUrn.has(urn)) {
@@ -3941,7 +4475,7 @@ async function renderInfo(triples, el, shortId = '', resourceProfile = 'default'
   const rawLabel = (triples['http://www.w3.org/2000/01/rdf-schema#label'] || [])[0] || '';
   const label   = getDisplayLabelOrFallback(rawLabel, shortId);
   const typeUrn = (triples['http://www.w3.org/1999/02/22-rdf-syntax-ns#type'] || [])[0] || '';
-  const chipSectionConfigs = getInfoChipSectionConfigs(shortId, resourceProfile, typeUrn);
+  const chipSectionConfigs = getInfoChipSectionConfigs(shortId, resourceProfile, typeUrn, entityUrn);
   const suppressedPredicateTails = getInfoChipSuppressedPredicateTails(chipSectionConfigs);
 
   let html = '';
@@ -4114,10 +4648,16 @@ function wireImageHoverEvents(containerEl) {
 async function resolveFeatureToLayer(featureUrn) {
   if (spatialHoverCache.has(featureUrn)) return spatialHoverCache.get(featureUrn);
 
-  // Direct match (edge case: feature URN is itself a registered layer)
   if (layersByEntityUrn.has(featureUrn)) {
     spatialHoverCache.set(featureUrn, featureUrn);
     return featureUrn;
+  }
+
+  // Direct mapping fallback when feature identity differs from registered layer URN.
+  if (mapFeatureOwnerUrnByFeatureUrn.has(featureUrn)) {
+    const ownerUrn = mapFeatureOwnerUrnByFeatureUrn.get(featureUrn) || null;
+    spatialHoverCache.set(featureUrn, ownerUrn);
+    return ownerUrn;
   }
 
   try {
@@ -4283,31 +4823,87 @@ function renderConceptImages(depictedItems, el, bestImageUrns = [], contextEntit
 // ── Panel: Map ────────────────────────────────────────────────────────────────
 
 function addGeoJsonLayer(item, styleOpts, clickable) {
-  const gj = parseGeoJson(item.geojson);
-  if (!gj) return null;
+  const fallbackUrn = item && item.urn ? item.urn : '';
+  const normalizedFeatures = normalizeGeoJsonFeatures(item && item.geojson, { fallbackUrn });
+  if (!normalizedFeatures.length || !layerGroup) return null;
 
-  const layer = L.geoJSON(gj, {
-    style: { ...styleOpts, className: clickable ? 'plod-clickable' : 'plod-static' },
-    onEachFeature(_feature, lyr) {
-      const label = getDisplayLabelOrFallback(item.label, extractShortId(item.urn || ''));
-      lyr.bindTooltip(label, { sticky: true });
-      if (item.urn) {
-        lyr.on('mouseover', () => {
-          paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: item.urn, source: 'map' });
-        });
-        lyr.on('mouseout', () => {
-          paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn: item.urn, source: 'map' });
-        });
-      }
-      if (clickable && item.urn) {
-        lyr.on('click', () => navigate(item.urn));
-      }
-    },
-  });
+  const featureLayers = [];
+  const hoverUrn = fallbackUrn || (normalizedFeatures[0] && normalizedFeatures[0].featureUrn) || '';
+  const aggregateLabel = getDisplayLabelOrFallback(item && item.label, extractShortId(hoverUrn));
+  const shouldPreferFeatureUrnOnClick = clickable && normalizedFeatures.length > 1;
 
-  layer.addTo(layerGroup);
-  if (item.urn) layersByEntityUrn.set(item.urn, { layer, defaultStyle: { ...styleOpts } });
-  return layer;
+  const getFeatureDisplayLabel = normalizedFeature => {
+    const props = normalizedFeature && normalizedFeature.featureGeoJson && normalizedFeature.featureGeoJson.properties
+      ? normalizedFeature.featureGeoJson.properties
+      : null;
+
+    const featureLabel = props
+      ? getDisplayLabelOrFallback(props.label || props.title || props.name || '', '')
+      : '';
+    if (featureLabel) {
+      if (featureLabel.startsWith('urn:p-lod:id:')) return extractShortId(featureLabel);
+      return featureLabel;
+    }
+
+    return getDisplayLabelOrFallback(aggregateLabel, extractShortId(normalizedFeature.featureUrn));
+  };
+
+  for (const normalizedFeature of normalizedFeatures) {
+    const featureUrn = normalizedFeature.featureUrn;
+    const featureGeoJson = normalizedFeature.featureGeoJson;
+    const featureLabel = getFeatureDisplayLabel(normalizedFeature);
+
+    geojsonFeaturePayloadByUrn.set(featureUrn, featureGeoJson);
+    registerGeoJsonFeatureUrn(featureUrn, featureUrn);
+    if (fallbackUrn) registerGeoJsonFeatureUrn(fallbackUrn, featureUrn);
+    mapFeatureOwnerUrnByFeatureUrn.set(featureUrn, featureUrn);
+
+    const featureLayer = L.geoJSON(featureGeoJson, {
+      style: { ...styleOpts, className: clickable ? 'plod-clickable' : 'plod-static' },
+      onEachFeature(_feature, lyr) {
+        if (featureLabel) lyr.bindTooltip(featureLabel, { sticky: true });
+        if (hoverUrn) {
+          lyr.on('mouseover', () => {
+            paneEvents.emit(PANE_EVENT_ENTITY_HIGHLIGHT, { urn: featureUrn, source: 'map' });
+          });
+          lyr.on('mouseout', () => {
+            paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn: featureUrn, source: 'map' });
+          });
+        }
+        if (clickable && item && item.urn) {
+          const clickTargetUrn = shouldPreferFeatureUrnOnClick ? featureUrn : item.urn;
+          lyr.on('click', () => navigate(clickTargetUrn));
+        }
+      },
+    }).addTo(layerGroup);
+
+    featureLayers.push(featureLayer);
+    layersByEntityUrn.set(featureUrn, {
+      layers: [featureLayer],
+      boundsLayer: featureLayer,
+      defaultStyle: { ...styleOpts },
+    });
+  }
+
+  if (!featureLayers.length) return null;
+
+  const boundsLayer = L.featureGroup(featureLayers);
+  if (item && item.urn) {
+    const existingEntry = layersByEntityUrn.get(item.urn);
+    if (existingEntry) {
+      existingEntry.layers.push(...featureLayers);
+      existingEntry.boundsLayer = L.featureGroup(existingEntry.layers);
+      return existingEntry.boundsLayer;
+    }
+
+    layersByEntityUrn.set(item.urn, {
+      layers: featureLayers,
+      boundsLayer,
+      defaultStyle: { ...styleOpts },
+    });
+  }
+
+  return boundsLayer;
 }
 
 function panToLayerIfOutOfView(layer) {
@@ -4355,16 +4951,20 @@ function initMapHoverListeners() {
       runFarZoomAttentionPulse(urn, entry);
     } else {
       cancelAttentionPulseForUrn(urn);
-      entry.layer.setStyle(HIGHLIGHT_STYLE);
+      entry.layers.forEach(layer => layer.setStyle(HIGHLIGHT_STYLE));
     }
 
-    const outOfView = isLayerOutOfView(entry.layer);
+    const outOfView = isLayerOutOfView(entry.boundsLayer);
     if (source === 'image' && outOfView && !shouldPan && !isPanModifierDown()) {
       showMapFocusHint();
     }
 
     if (shouldPan || isPanModifierDown()) {
-      panToLayerIfOutOfView(entry.layer);
+      panToLayerIfOutOfView(entry.boundsLayer);
+    }
+
+    if (source === 'map') {
+      paneEvents.emit(PANE_EVENT_IMAGE_PREVIEW_REQUEST, { featureUrn: urn, source: 'map' });
     }
 
     hideActiveAncestorOutline();
@@ -4372,14 +4972,18 @@ function initMapHoverListeners() {
 
     void showAncestorOutlineForHoveredEntity(urn);
   });
-  paneEvents.on(PANE_EVENT_ENTITY_CLEAR, ({ urn }) => {
+  paneEvents.on(PANE_EVENT_ENTITY_CLEAR, ({ urn, source = null }) => {
     const entry = layersByEntityUrn.get(urn);
     if (!entry) return;
 
     cancelAttentionPulseForUrn(urn);
     if (currentHoveredEntityUrn === urn) currentHoveredEntityUrn = null;
     hideActiveAncestorOutline();
-    entry.layer.setStyle(entry.defaultStyle);
+    entry.layers.forEach(layer => layer.setStyle(entry.defaultStyle));
+
+    if (source === 'map') {
+      paneEvents.emit(PANE_EVENT_IMAGE_PREVIEW_CLEAR, { featureUrn: urn, source: 'map' });
+    }
   });
 
   paneEvents.on(PANE_EVENT_ENTITY_HIGHLIGHT, ({ urn, source }) => {
@@ -4393,6 +4997,16 @@ function initMapHoverListeners() {
   paneEvents.on(PANE_EVENT_ENTITY_CLEAR, ({ source }) => {
     if (source !== 'map' && source !== 'info') return;
     clearActiveMapHoverImage();
+  });
+
+  paneEvents.on(PANE_EVENT_IMAGE_PREVIEW_REQUEST, ({ featureUrn, source }) => {
+    if (source !== 'map') return;
+    requestImagePaneFeaturePreview(featureUrn);
+  });
+
+  paneEvents.on(PANE_EVENT_IMAGE_PREVIEW_CLEAR, ({ source }) => {
+    if (source !== 'map') return;
+    cancelImagePaneFeaturePreviewRequest();
   });
 }
 
@@ -4544,7 +5158,10 @@ async function loadEntity(rawId) {
     resourceHandler.getImagesPromise(shortId),
     resourceHandler.getMapDataPromise(shortId),
     hierarchyProfile
-      ? buildHierarchyState(hierarchyProfile, currentHierarchyNode)
+      ? (async () => {
+          const seedChildren = await resourceHandler.getHierarchySeedNodes(currentHierarchyNode);
+          return buildHierarchyState(hierarchyProfile, currentHierarchyNode, { seedChildren });
+        })()
       : Promise.resolve(null),
   ]);
 
