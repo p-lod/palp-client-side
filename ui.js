@@ -458,6 +458,12 @@ function ensureExternalLinkPreviewInitialized() {
   }
 }
 
+function getExternalLinkPreviewIframeSrc(url) {
+  const href = String(url || '').trim();
+  if (!href) return 'about:blank';
+  return href.replace(/^http:\/\//i, 'https://');
+}
+
 function openExternalLinkPreview(url, label = '') {
   const href = String(url || '').trim();
   if (!href) return;
@@ -467,7 +473,7 @@ function openExternalLinkPreview(url, label = '') {
   const title = getDisplayLabelOrFallback(label, href);
   externalLinkPreviewState.titleEl.textContent = title;
   externalLinkPreviewState.launchLinkEl.href = href;
-  externalLinkPreviewState.iframeEl.src = href;
+  externalLinkPreviewState.iframeEl.src = getExternalLinkPreviewIframeSrc(href);
   externalLinkPreviewState.overlayEl.hidden = false;
   externalLinkPreviewState.overlayEl.classList.add('is-open');
   externalLinkPreviewState.isOpen = true;
