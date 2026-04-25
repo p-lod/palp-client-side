@@ -3536,7 +3536,7 @@ function ensureMapInitialized(slotEl) {
 
   if (!leafletMap) {
     leafletMap = L.map(container, { zoomControl: true });
-    L.tileLayer('http://palp.art/xyz-tiles/{z}/{x}/{y}.png', {
+    L.tileLayer('http://p-lod.org/xyz-tiles/{z}/{x}/{y}.png', {
       attribution: '<a href="https://websites.umass.edu/pbmp/">PBMP</a>',
       maxZoom: 19,
     }).addTo(leafletMap);
