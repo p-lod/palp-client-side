@@ -10,6 +10,30 @@
     main {
       flex: 1;
     }
+    body {
+      position: relative;
+    }
+    .corner-art-link {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: clamp(165px, 21.43vw, 390px);
+      aspect-ratio: 1 / 1;
+      display: block;
+      background-image: url('https://umassamherst.lunaimaging.com/luna/servlet/iiif/umass~14~14~139468~1319498/full/!853,853/0/default.jpg');
+      background-size: cover;
+      background-position: top left;
+      opacity: 0.95;
+      z-index: 0;
+      -webkit-mask-image: radial-gradient(circle at 0 0, rgba(0, 0, 0, 1) 0 30%, rgba(0, 0, 0, 0.85) 36%, rgba(0, 0, 0, 0.4) 44%, rgba(0, 0, 0, 0) 54%);
+      mask-image: radial-gradient(circle at 0 0, rgba(0, 0, 0, 1) 0 30%, rgba(0, 0, 0, 0.85) 36%, rgba(0, 0, 0, 0.4) 44%, rgba(0, 0, 0, 0) 54%);
+    }
+    header,
+    main,
+    footer {
+      position: relative;
+      z-index: 1;
+    }
     footer {
       flex-shrink: 0;
       padding: 0.5rem 1rem;
@@ -23,6 +47,12 @@
   </style>
 </head>
 <body>
+
+  <a
+    class="corner-art-link"
+    href="/browse/#r7-i4-p31-space-24?map-lat=40.750706&map-lng=14.485191&map-z=19.00"
+    aria-label="Open linked location in browse view"
+  ></a>
 
   <header style="width:70%;margin:auto; margin-top:1em" id="header">
     <span id="app-title">Pompeii Artistic Landscape Project</span>
@@ -82,7 +112,7 @@
             </tr>
           </table>
 
-      <p>Browsing within PALP will usually show location(s) and images related to the identifier being viewed. PALP has assigned identifiers to thousands of images, rooms, and properties at Pompeii, as well as to regions, insulae, and the city itself. It has also assigned identifiers to concepts that appear in Pompeian wall paintings, such as ‘<a href="/browse/#snake">snake</a>’. Browsing to ‘<a href="/browse/#pompeii">pompeii</a>’ will show all concepts identified to date. They may take a few seconds to load. In general, PALP uses short web-address (URLs) that are easy to remember and that can be easily shared.</p>
+      <p>Browsing within PALP will usually show location(s) and images related to the identifier being viewed. PALP has assigned identifiers to thousands of images, rooms, and properties at Pompeii, as well as to regions, insulae, and the city itself. It has also assigned identifiers to concepts that appear in Pompeian wall paintings, such as ‘<a href="/browse/#snake">snake</a>’. Browsing to ‘<a href="/browse/#pompeii">pompeii</a>’ will show all concepts identified to date. They may take a few seconds to load. In general, PALP uses short web-address (URLs) that are often easy to remember and that can be easily shared.</p>
       <h2>People, Institutions, and Resources</h2>
       <p>PALP is a collaborative initiative co-directed by <a href="https://www.umass.edu/classics/about/directory/eric-poehler">Eric Poehler</a> (University of Massachusetts Amherst) and <a href="https://isaw.nyu.edu/people/faculty/isaw-faculty/sebastian-heath">Sebastian Heath</a> (Institute for the Study of the Ancient World, NYU). It builds on data from the <a href="https://websites.umass.edu/pbmp/">Pompeii Bibliography and Mapping Project</a> and uses other public resources such as <a href="https://pompeiiinpictures.com/pompeiiinpictures/">Pompeii in Pictures</a>. It is developed using open source software and is informed by the principles of Linked Open Data. PALP was initially funded by a grant from the Getty Foundation as part of its <a href="https://www.getty.edu/projects/digital-art-history/">Digital Art History initiative</a>. It is now part of the Pompeii Linked Open Data (<a href="https://p-lod.org/">P-LOD</a>) initiative.</p>
       <p>Follow project-related developments on Bluesky (<a href="https://bsky.app/profile/p-lod-bot.bsky.social"><img src="https://upload.wikimedia.org/wikipedia/commons/7/7a/Bluesky_Logo.svg" alt="Bluesky" style="height: 1em; vertical-align: middle;"></a>).</p>
