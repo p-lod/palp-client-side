@@ -6,13 +6,21 @@
   <title>Pompeii Artistic Landscape Project</title>
   <link rel="stylesheet" href="../style.css">
 
-    <style>
-    main {
-      flex: 1;
-    }
-    body {
+  <style>
+    /* page layout */
+    body { position: relative; }
+    main { flex: 1; }
+
+    #header,
+    main,
+    footer {
       position: relative;
+      z-index: 1;
+      width: 70%;
+      margin: 1em auto 0;
     }
+
+    /* decorative corner image */
     .corner-art-link {
       position: fixed;
       top: 0;
@@ -25,15 +33,11 @@
       background-position: top left;
       opacity: 0.95;
       z-index: 0;
-      -webkit-mask-image: radial-gradient(circle at 0 0, rgba(0, 0, 0, 1) 0 30%, rgba(0, 0, 0, 0.85) 36%, rgba(0, 0, 0, 0.4) 44%, rgba(0, 0, 0, 0) 54%);
-      mask-image: radial-gradient(circle at 0 0, rgba(0, 0, 0, 1) 0 30%, rgba(0, 0, 0, 0.85) 36%, rgba(0, 0, 0, 0.4) 44%, rgba(0, 0, 0, 0) 54%);
+      -webkit-mask-image: radial-gradient(circle at 0 0, rgba(0,0,0,1) 0 30%, rgba(0,0,0,0.85) 36%, rgba(0,0,0,0.4) 44%, rgba(0,0,0,0) 54%);
+      mask-image: radial-gradient(circle at 0 0, rgba(0,0,0,1) 0 30%, rgba(0,0,0,0.85) 36%, rgba(0,0,0,0.4) 44%, rgba(0,0,0,0) 54%);
     }
-    header,
-    main,
-    footer {
-      position: relative;
-      z-index: 1;
-    }
+
+    /* footer */
     footer {
       flex-shrink: 0;
       padding: 0.5rem 1rem;
@@ -44,6 +48,21 @@
     }
     footer p { margin: 0; }
     footer a { color: #5b7fa6; }
+
+    /* intro section */
+    .intro p { text-align: justify; }
+    .intro table {
+      table-layout: fixed;
+      width: 100%;
+      margin-bottom: 0.5em;
+      border-spacing: 0.2em;
+    }
+    .intro table th,
+    .intro table td { text-align: center; }
+    .intro table th { padding-bottom: 0.5em; }
+    .intro table td a { display: block; overflow: hidden; }
+    .intro table img { width: 100%; height: 12vw; object-fit: cover; object-position: center; display: block; }
+    .intro .bluesky-icon { height: 1em; vertical-align: middle; }
   </style>
 </head>
 <body>
@@ -54,7 +73,7 @@
     aria-label="Open linked location in browse view"
   ></a>
 
-  <header style="width:70%;margin:auto; margin-top:1em" id="header">
+  <header id="header">
     <span id="app-title">Pompeii Artistic Landscape Project</span>
     <div id="search-bar">
       <input type="text" id="id-input" list="id-suggestions" placeholder="pompeii, athena, r4, …" autocomplete="off" spellcheck="false">
@@ -65,48 +84,48 @@
 
   </header>
 
-  <main style="width:65%;margin:auto; margin-top:1em">
+  <main>
     <section class="intro">
       <p>The Pompeii Artistic Landscape Project (PALP) is an online resource that supports site-wide discovery, mapping, analysis, and sharing of information about Pompeian artworks in their architectural and urban contexts. It is being developed using the principles of Linked Open Data. The goal of PALP is to increase the number of researchers and members of the public who can access, analyze, interpret, and share the artworks of the most richly documented urban environment of the Roman world: Pompeii.</p>
 
-          <table style="width:90%;margin-left: auto;margin-right: auto;margin-bottom:.5em;border-spacing: .2em"><colgroup><col style="width:25%"><col style="width:25%"><col style="width:25%"><col style="width:25%"></colgroup>
+          <table>
             <tr>
-              <th colspan="4" style="text-align:center; padding-bottom:.5em">Click on an Image Below to Start Browsing or go to <a href="/browse/#pompeii">Pompeii</a>.</th>
+              <th colspan="4">Click on an Image Below to Start Browsing or go to <a href="/browse/#pompeii">Pompeii</a>.</th>
             </tr>
 
             <tr>
-              <td style="text-align:center">
+              <td>
                 <a href="/browse/#snake">
                   <img src="https://umassamherst.lunaimaging.com/MediaManager/srvr?mediafile=/Size1/umass~14~14/4227/image41174.jpg">
                 </a>
               </td>
-              <td style="text-align:center">
-                <a href="/browse/ariadne">
+              <td>
+                <a href="/browse/#ariadne">
                   <img src="https://umassamherst.lunaimaging.com/MediaManager/srvr?mediafile=/Size1/umass~14~14/4236/image50065.jpg">
                 </a>
               </td>
-              <td style="text-align:center">
+              <td>
                 <a href="/browse/#r1-i9-p5">
                   <img src="https://umassamherst.lunaimaging.com/MediaManager/srvr?mediafile=/Size1/umass~14~14/4219/image34152.jpg">
                 </a>
               </td>
-              <td style="text-align:center">
+              <td>
                 <a href="/browse/#r1-i10-p4-space-4">
                   <img src="https://umassamherst.lunaimaging.com/MediaManager/srvr?mediafile=/Size1/umass~14~14/4246/image58926.jpg">
                 </a>
               </td>
             </tr>
             <tr>
-              <td style="text-align:center">
+              <td>
                 <a href="/browse/#snake">Snake</a>
               </td>
-              <td style="text-align:center">
+              <td>
                 <a href="/browse/#ariadne">Ariadne</a>
               </td>
-              <td style="text-align:center">
+              <td>
                 <a href="/browse/#r1-i9-p5">House of the Floral Cubicula</a>
               </td>
-              <td style="text-align:center">
+              <td>
                 <a href="/browse/#r1-i10-p4-space-4">Room with scenes from Troy</a>
               </td>
             </tr>
@@ -115,11 +134,11 @@
       <p>Browsing within PALP will usually show location(s) and images related to the identifier being viewed. PALP has assigned identifiers to thousands of images, rooms, and properties at Pompeii, as well as to regions, insulae, and the city itself. It has also assigned identifiers to concepts that appear in Pompeian wall paintings, such as ‘<a href="/browse/#snake">snake</a>’. Browsing to ‘<a href="/browse/#pompeii">pompeii</a>’ will show all concepts identified to date. They may take a few seconds to load. In general, PALP uses short web-address (URLs) that are often easy to remember and that can be easily shared.</p>
       <h2>People, Institutions, and Resources</h2>
       <p>PALP is a collaborative initiative co-directed by <a href="https://www.umass.edu/classics/about/directory/eric-poehler">Eric Poehler</a> (University of Massachusetts Amherst) and <a href="https://isaw.nyu.edu/people/faculty/isaw-faculty/sebastian-heath">Sebastian Heath</a> (Institute for the Study of the Ancient World, NYU). It builds on data from the <a href="https://websites.umass.edu/pbmp/">Pompeii Bibliography and Mapping Project</a> and uses other public resources such as <a href="https://pompeiiinpictures.com/pompeiiinpictures/">Pompeii in Pictures</a>. It is developed using open source software and is informed by the principles of Linked Open Data. PALP was initially funded by a grant from the Getty Foundation as part of its <a href="https://www.getty.edu/projects/digital-art-history/">Digital Art History initiative</a>. It is now part of the Pompeii Linked Open Data (<a href="https://p-lod.org/">P-LOD</a>) initiative.</p>
-      <p>Follow project-related developments on Bluesky (<a href="https://bsky.app/profile/p-lod-bot.bsky.social"><img src="https://upload.wikimedia.org/wikipedia/commons/7/7a/Bluesky_Logo.svg" alt="Bluesky" style="height: 1em; vertical-align: middle;"></a>).</p>
+      <p>Follow project-related developments via the P-LOD Bluesky account (<a href="https://bsky.app/profile/p-lod-bot.bsky.social"><img src="https://upload.wikimedia.org/wikipedia/commons/7/7a/Bluesky_Logo.svg" alt="Bluesky" class="bluesky-icon"></a>).</p>
     </section>
   </main>
 
-  <footer style="width:65%;margin:auto; margin-top:1em">
+  <footer>
     <p>PALP is hosted at the University of Massachusetts-Amherst and was originally funded by the Getty Foundation. The site is very much in development and will change regularly. It is part of the Pompeii Linked Open Data (<a href="https://p-lod.org">P-LOD</a>) initiative.</p>
   </footer>
 
