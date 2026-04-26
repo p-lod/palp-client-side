@@ -63,6 +63,21 @@
     footer p { margin: 0; }
     footer a { color: #5b7fa6; }
 
+    /* page-wide link style */
+    a:not(.corner-art-link):not(.corner-art-right) {
+      color: #445b6a;
+      text-decoration: underline;
+      text-decoration-color: rgba(68, 91, 106, 0.35);
+      text-underline-offset: 2px;
+    }
+    a:not(.corner-art-link):not(.corner-art-right):visited {
+      color: #445b6a;
+    }
+    a:not(.corner-art-link):not(.corner-art-right):hover {
+      color: #2d4554;
+      text-decoration-color: rgba(45, 69, 84, 0.8);
+    }
+
     /* intro section */
     .intro p { text-align: justify; }
     .intro table {
