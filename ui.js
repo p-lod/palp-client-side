@@ -1551,7 +1551,7 @@ function applyGridRatios() {
   divider.style.top = `${currentRowSplit * 100}%`;
 }
 
-function buildHash(id, layoutOverride = currentPaneLayoutOverride) {
+function buildHash(id, layoutOverride = currentPaneLayoutOverride, { includeMapView = true } = {}) {
   const shortId = extractShortId(normalizeId(id || DEFAULT_ID));
   const params = new URLSearchParams();
   const colSplitFixed = currentColSplit.toFixed(3);
@@ -1559,7 +1559,7 @@ function buildHash(id, layoutOverride = currentPaneLayoutOverride) {
   if (colSplitFixed !== '0.500') params.set('col-split', colSplitFixed);
   if (rowSplitFixed !== '0.500') params.set('row-split', rowSplitFixed);
 
-  if (leafletMap && !isMapAtDefaultView()) {
+  if (includeMapView && leafletMap && !isMapAtDefaultView()) {
     const center = leafletMap.getCenter();
     const zoom = leafletMap.getZoom();
     params.set('map-lat', center.lat.toFixed(6));
@@ -1981,7 +1981,7 @@ function requestImagePaneFeaturePreview(featureUrn) {
 
     imagePanePreviewActiveUrn = featureUrn;
     if (currentImagePaneSlotEl) {
-      currentImagePaneSlotEl.innerHTML = '<p class="loading">Loading feature images…</p>';
+      renderLoadingInSlot(currentImagePaneSlotEl, 'Loading feature images…');
     }
 
     void ensureImagePanePreviewImages(featureUrn).then(images => {
@@ -4120,15 +4120,6 @@ function renderLoadingInSlot(slotEl, text = 'Loading…') {
   slotEl.innerHTML = `<p class="loading">${escHtml(text)}</p>`;
 }
 
-function renderHierarchyPlaceholder(slotEl, profile) {
-  if (!slotEl) return;
-
-  let msg = 'Hierarchy browser coming soon.';
-  if (profile === 'concept') msg = 'Concept hierarchy browser coming soon.';
-  if (profile === 'spatial') msg = 'Spatial hierarchy browser coming soon.';
-  slotEl.innerHTML = `<p class="placeholder">${escHtml(msg)}</p>`;
-}
-
 function normalizeHierarchyNode(item) {
   if (!item) return null;
 
@@ -4423,7 +4414,7 @@ function rerenderHierarchy() {
   const slotEl = getHierarchySlot();
   if (!slotEl) return;
   if (!hierarchyState) {
-    renderHierarchyPlaceholder(slotEl, currentResourceProfile);
+    renderLoadingInSlot(slotEl);
     return;
   }
   renderHierarchyState(slotEl, hierarchyState);
@@ -4677,7 +4668,7 @@ function renderImages(images, el, contextEntityUrn = '') {
     return;
   }
 
-  el.innerHTML = '<p class="loading">Loading images…</p>';
+  renderLoadingInSlot(el, 'Loading images…');
 
   // Build feature URN lookup before resolving URLs (resolveImageUrl discards the feature field)
   const featureByUrn = new Map();
@@ -4861,7 +4852,7 @@ function renderConceptImages(depictedItems, el, bestImageUrns = [], contextEntit
     return;
   }
 
-  el.innerHTML = '<p class="loading">Loading images…</p>';
+  renderLoadingInSlot(el, 'Loading images…');
 
   const cards = [];
   const seenImageUrns = new Set();
@@ -5201,7 +5192,7 @@ async function fetchDepictedWhereWithSpaceFallback(shortId) {
 // ── Navigation ────────────────────────────────────────────────────────────────
 
 function navigate(id) {
-  location.hash = buildHash(id, currentPaneLayoutOverride);
+  location.hash = buildHash(id, currentPaneLayoutOverride, { includeMapView: false });
 }
 
 async function loadEntity(rawId) {
@@ -5221,10 +5212,7 @@ async function loadEntity(rawId) {
 
   renderLoadingInSlot(getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.INFO));
   renderLoadingInSlot(getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.IMAGES));
-  renderHierarchyPlaceholder(
-    getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER),
-    currentResourceProfile
-  );
+  renderLoadingInSlot(getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER));
 
   // Step 1: fetch metadata (we need the type to decide the map mode)
   let triples = {};
@@ -5252,10 +5240,7 @@ async function loadEntity(rawId) {
     currentResourceProfile,
     id
   );
-  renderHierarchyPlaceholder(
-    getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER),
-    currentResourceProfile
-  );
+  renderLoadingInSlot(getPaneSlotForContent(currentPaneLayout, PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER));
 
   const hierarchyProfile = resourceHandler.getHierarchyProfile();
   const currentHierarchyNode = {
