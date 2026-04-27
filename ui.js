@@ -1786,6 +1786,7 @@ const IMAGE_MODAL_INITIAL_GEOMETRY = Object.freeze({
 const IMAGE_MODAL_ZOOM_MIN = 1;
 const IMAGE_MODAL_ZOOM_MAX = 6;
 const IMAGE_MODAL_ZOOM_STEP = 1.2;
+const IIIF_THUMBNAIL_WIDTH = 240;
 
 const HIGHLIGHT_STYLE = Object.freeze({
   color: '#ff9900',
@@ -2065,6 +2066,109 @@ function buildLunaIiifManifestUrl(lunaIdentity) {
   return `${LUNA_BASE_URL}/luna/servlet/iiif/m/${lunaIdentity}/manifest`;
 }
 
+// Concurrency limiter for LUNA manifest fetches.
+// LUNA rate-limits aggressively (HTTP 429), so keep this intentionally low.
+const lunaManifestFetchLimit = (() => {
+  const MAX = 2;
+  let active = 0;
+  const queue = [];
+  return function limit(fn) {
+    return new Promise((resolve, reject) => {
+      const run = () => {
+        active++;
+        Promise.resolve(fn()).then(resolve, reject).finally(() => {
+          active--;
+          if (queue.length) queue.shift()();
+        });
+      };
+      if (active < MAX) run();
+      else queue.push(run);
+    });
+  };
+})();
+
+const LUNA_MANIFEST_MAX_RETRIES = 8;
+const LUNA_MANIFEST_RETRY_BASE_MS = 500;
+const LUNA_MANIFEST_RETRY_MAX_MS = 12000;
+const iiifImageUrlByManifestUrlCache = new Map();
+const pendingIiifImageUrlByManifestUrl = new Map();
+
+const API_ID_FETCH_MAX_RETRIES = 5;
+const API_ID_RETRY_BASE_MS = 300;
+const API_ID_RETRY_MAX_MS = 4000;
+const triplesByUrnCache = new Map();
+const pendingTriplesByUrn = new Map();
+
+const apiIdFetchLimit = (() => {
+  const MAX = 8;
+  let active = 0;
+  const queue = [];
+  return function limit(fn) {
+    return new Promise((resolve, reject) => {
+      const run = () => {
+        active++;
+        Promise.resolve(fn()).then(resolve, reject).finally(() => {
+          active--;
+          if (queue.length) queue.shift()();
+        });
+      };
+      if (active < MAX) run();
+      else queue.push(run);
+    });
+  };
+})();
+
+function sleepMs(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function parseRetryAfterMs(rawHeader) {
+  const text = String(rawHeader || '').trim();
+  if (!text) return 0;
+
+  const seconds = Number(text);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.max(0, Math.floor(seconds * 1000));
+  }
+
+  const dateMs = Date.parse(text);
+  if (Number.isFinite(dateMs)) {
+    return Math.max(0, dateMs - Date.now());
+  }
+
+  return 0;
+}
+
+async function fetchIiifManifestJsonWithRetry(iiifManifestUrl) {
+  for (let attempt = 0; attempt <= LUNA_MANIFEST_MAX_RETRIES; attempt++) {
+    try {
+      const r = await fetch(iiifManifestUrl);
+      if (r.ok) return await r.json();
+
+      const shouldRetry = r.status === 429 || r.status === 503;
+      if (!shouldRetry || attempt === LUNA_MANIFEST_MAX_RETRIES) return null;
+
+      const retryAfterMs = parseRetryAfterMs(r.headers.get('retry-after'));
+      const expBackoffMs = Math.min(
+        LUNA_MANIFEST_RETRY_MAX_MS,
+        LUNA_MANIFEST_RETRY_BASE_MS * (2 ** attempt)
+      );
+      const jitterMs = Math.floor(Math.random() * 250);
+      await sleepMs(Math.max(retryAfterMs, expBackoffMs + jitterMs));
+    } catch (_) {
+      if (attempt === LUNA_MANIFEST_MAX_RETRIES) return null;
+      const expBackoffMs = Math.min(
+        LUNA_MANIFEST_RETRY_MAX_MS,
+        LUNA_MANIFEST_RETRY_BASE_MS * (2 ** attempt)
+      );
+      const jitterMs = Math.floor(Math.random() * 250);
+      await sleepMs(expBackoffMs + jitterMs);
+    }
+  }
+
+  return null;
+}
+
 function extractIiifImageUrlFromManifest(manifest) {
   if (!manifest || typeof manifest !== 'object') return '';
 
@@ -2098,29 +2202,104 @@ function extractIiifImageUrlFromManifest(manifest) {
 async function fetchIiifImageUrlFromManifest(iiifManifestUrl) {
   if (!iiifManifestUrl) return '';
 
+  if (iiifImageUrlByManifestUrlCache.has(iiifManifestUrl)) {
+    return iiifImageUrlByManifestUrlCache.get(iiifManifestUrl) || '';
+  }
+  if (pendingIiifImageUrlByManifestUrl.has(iiifManifestUrl)) {
+    return pendingIiifImageUrlByManifestUrl.get(iiifManifestUrl);
+  }
+
+  const pending = lunaManifestFetchLimit(async () => {
+    const manifest = await fetchIiifManifestJsonWithRetry(iiifManifestUrl);
+    if (!manifest) return '';
+    const iiifImageUrl = extractIiifImageUrlFromManifest(manifest);
+    if (iiifImageUrl) iiifImageUrlByManifestUrlCache.set(iiifManifestUrl, iiifImageUrl);
+    return iiifImageUrl;
+  }).catch(() => '').finally(() => {
+    pendingIiifImageUrlByManifestUrl.delete(iiifManifestUrl);
+  });
+
+  pendingIiifImageUrlByManifestUrl.set(iiifManifestUrl, pending);
+
   try {
-    const r = await fetch(iiifManifestUrl);
-    if (!r.ok) return '';
-    const manifest = await r.json();
-    return extractIiifImageUrlFromManifest(manifest);
+    return await pending;
   } catch (_) {
     return '';
   }
+}
+
+async function fetchTriplesForUrnById(urn) {
+  if (!urn) return null;
+
+  if (triplesByUrnCache.has(urn)) return triplesByUrnCache.get(urn);
+  if (pendingTriplesByUrn.has(urn)) return pendingTriplesByUrn.get(urn);
+
+  const pending = apiIdFetchLimit(async () => {
+    const shortId = extractShortId(urn);
+
+    for (let attempt = 0; attempt <= API_ID_FETCH_MAX_RETRIES; attempt++) {
+      try {
+        const r = await fetch(`${API_BASE}/id/${encodeURIComponent(shortId)}`);
+        if (r.ok) {
+          const triples = flattenTriples(await r.json());
+          triplesByUrnCache.set(urn, triples);
+          return triples;
+        }
+
+        const shouldRetry = r.status === 429 || r.status === 503;
+        if (!shouldRetry || attempt === API_ID_FETCH_MAX_RETRIES) return null;
+
+        const retryAfterMs = parseRetryAfterMs(r.headers.get('retry-after'));
+        const expBackoffMs = Math.min(
+          API_ID_RETRY_MAX_MS,
+          API_ID_RETRY_BASE_MS * (2 ** attempt)
+        );
+        const jitterMs = Math.floor(Math.random() * 120);
+        await sleepMs(Math.max(retryAfterMs, expBackoffMs + jitterMs));
+      } catch (_) {
+        if (attempt === API_ID_FETCH_MAX_RETRIES) return null;
+        const expBackoffMs = Math.min(
+          API_ID_RETRY_MAX_MS,
+          API_ID_RETRY_BASE_MS * (2 ** attempt)
+        );
+        const jitterMs = Math.floor(Math.random() * 120);
+        await sleepMs(expBackoffMs + jitterMs);
+      }
+    }
+
+    return null;
+  }).finally(() => {
+    pendingTriplesByUrn.delete(urn);
+  });
+
+  pendingTriplesByUrn.set(urn, pending);
+  return pending;
+}
+
+function deriveIiifManifestUrlFromTriples(imageUrn, triples) {
+  if (!imageUrn || !triples) return '';
+  const lRecord = (triples[LUNA_RECORD_ID_PREDICATE] || [])[0] || '';
+  const lMedia = (triples[LUNA_MEDIA_ID_PREDICATE] || [])[0] || '';
+  const lunaIdentity = buildLunaIiifIdentity(imageUrn, lRecord, lMedia);
+  return buildLunaIiifManifestUrl(lunaIdentity);
+}
+
+function buildIiifThumbnailUrl(iiifImageUrl, width = IIIF_THUMBNAIL_WIDTH) {
+  if (!iiifImageUrl) return '';
+  // Replace the IIIF size segment (e.g. !853,853 or 1200,) with !width,width
+  return iiifImageUrl.replace(/\/full\/[^/]+\//, `/full/!${width},${width}/`);
 }
 
 async function fetchImageIdData(imageUrn) {
   if (!imageUrn) return { caption: '', lunaLandingUrl: '', iiifManifestUrl: '', iiifImageUrl: '' };
 
   try {
-    const shortId = extractShortId(imageUrn);
-    const r = await fetch(`${API_BASE}/id/${encodeURIComponent(shortId)}`);
-    if (!r.ok) return { caption: '', lunaLandingUrl: '', iiifManifestUrl: '', iiifImageUrl: '' };
-    const triples = flattenTriples(await r.json());
+    const triples = await fetchTriplesForUrnById(imageUrn);
+    if (!triples) return { caption: '', lunaLandingUrl: '', iiifManifestUrl: '', iiifImageUrl: '' };
     const caption = normalizeImageModalCaption((triples[IMAGE_MODAL_CAPTION_PREDICATE] || [])[0] || '');
     const lRecord = (triples[LUNA_RECORD_ID_PREDICATE] || [])[0] || '';
     const lMedia  = (triples[LUNA_MEDIA_ID_PREDICATE]  || [])[0] || '';
-    const lunaIdentity = buildLunaIiifIdentity(imageUrn, lRecord, lMedia);
-    const iiifManifestUrl = buildLunaIiifManifestUrl(lunaIdentity);
+    const iiifManifestUrl = deriveIiifManifestUrlFromTriples(imageUrn, triples);
     const iiifImageUrl = await fetchIiifImageUrlFromManifest(iiifManifestUrl);
     return {
       caption,
@@ -2160,6 +2339,21 @@ function requestImageModalCaptionIfMissing() {
       changed = true;
     }
     if (changed) renderImageModalContent();
+    // If we have the manifest URL but no image URL (e.g. manifest fetch failed at pane-load time),
+    // do a targeted retry now so the modal can show the image.
+    if (imageModalState.iiifManifestUrl && !imageModalState.iiifImageUrl) {
+      const manifestUrl = imageModalState.iiifManifestUrl;
+      const retryToken = ++imageModalState.captionRequestToken;
+      void fetchIiifImageUrlFromManifest(manifestUrl).then(iiifImageUrl => {
+        if (!iiifImageUrl) return;
+        if (retryToken !== imageModalState.captionRequestToken) return;
+        if (!imageModalState.isOpen) return;
+        if (imageModalState.imageUrn !== imageUrn) return;
+        imageModalState.iiifImageUrl = iiifImageUrl;
+        imageModalState.iiifImageByImageUrn.set(imageUrn, iiifImageUrl);
+        renderImageModalContent();
+      });
+    }
     return;
   }
 
@@ -3234,7 +3428,7 @@ function openImageModal(payload = {}) {
   const normalized = normalizeImageModalPayload({
     ...payload,
     triggerEl: payload.triggerEl || document.activeElement || null,
-  });
+  }, { requireImageUrl: !!(payload.requireImageUrl !== false) });
   if (!normalized) return;
 
   ensureImageModalInitialized();
@@ -3419,6 +3613,28 @@ function wireImageModalOpenEvents(containerEl) {
       paneEvents.emit(UI_EVENT_IMAGE_MODAL_OPEN, {
         imageUrl,
         imageUrn: el.dataset.imageUrn || el.dataset.entityUrn || '',
+        contextUrn: el.dataset.featureUrn || el.dataset.entityUrn || '',
+        imageCaption: el.dataset.imageCaption || '',
+        triggerEl: el,
+      });
+    });
+  });
+
+  // Also wire fallback tiles (no URL yet / IIIF failed) so clicking still opens the modal.
+  // The modal will fetch IIIF data on open via requestImageModalCaptionIfMissing.
+  containerEl.querySelectorAll('.image-urn-fallback[data-image-urn]').forEach(el => {
+    el.addEventListener('click', e => {
+      if (e.defaultPrevented) return;
+      if (e.button !== 0) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      openImageModal({
+        imageUrl: '',
+        requireImageUrl: false,
+        imageUrn: el.dataset.imageUrn || '',
         contextUrn: el.dataset.featureUrn || el.dataset.entityUrn || '',
         imageCaption: el.dataset.imageCaption || '',
         triggerEl: el,
@@ -4639,25 +4855,30 @@ async function resolveImageUrl(imgDict) {
   const urn = typeof imgDict === 'string' ? imgDict : imgDict.urn;
   if (!urn) return null;
 
-  // Check if the /images/ response already included a direct URL field
-  if (typeof imgDict === 'object') {
-    const direct = imgDict.url || imgDict.image_url || imgDict.iiif_url;
-    if (direct) return { urn, url: direct };
+  // Use the same IIIF lookup the modal uses: /id triples → manifest → image URL.
+  // Pre-populate the modal cache so opening the modal requires no additional fetches.
+  const { caption, lunaLandingUrl, iiifManifestUrl, iiifImageUrl } = await fetchImageIdData(urn);
+
+  // Only cache when we actually got data; a failed lookup should not block a modal retry.
+  if (!imageModalState.captionByImageUrn.has(urn) && (caption || iiifImageUrl)) {
+    imageModalState.captionByImageUrn.set(urn, caption || '');
+    imageModalState.lunaLandingByImageUrn.set(urn, lunaLandingUrl || '');
+    imageModalState.iiifManifestByImageUrn.set(urn, iiifManifestUrl || '');
+    imageModalState.iiifImageByImageUrn.set(urn, iiifImageUrl || '');
   }
 
-  // Fallback: call /id/{shortId} and look for any HTTP URL value
-  try {
-    const r = await fetch(`${API_BASE}/id/${encodeURIComponent(extractShortId(urn))}`);
-    if (!r.ok) return { urn, url: null };
-    const t = flattenTriples(await r.json());
-    for (const vals of Object.values(t)) {
-      for (const v of vals) {
-        if (isHttpUrl(v)) return { urn, url: v };
-      }
-    }
-  } catch (_) { /* ignore */ }
+  if (iiifImageUrl) {
+    // url = thumbnail for <img src>; iiifImageUrl = full-res for href and modal
+    return { urn, url: buildIiifThumbnailUrl(iiifImageUrl), iiifImageUrl };
+  }
 
-  return { urn, url: null };
+  // Fallback: direct URL fields supplied by the /images endpoint
+  if (typeof imgDict === 'object') {
+    const direct = imgDict.url || imgDict.image_url || imgDict.iiif_url;
+    if (direct) return { urn, url: direct, iiifImageUrl: '' };
+  }
+
+  return { urn, url: null, iiifImageUrl: '' };
 }
 
 function renderImages(images, el, contextEntityUrn = '') {
@@ -4668,50 +4889,145 @@ function renderImages(images, el, contextEntityUrn = '') {
     return;
   }
 
-  renderLoadingInSlot(el, 'Loading images…');
-
-  // Build feature URN lookup before resolving URLs (resolveImageUrl discards the feature field)
-  const featureByUrn = new Map();
-  const entityByUrn = new Map();
-  const captionByUrn = new Map();
+  // Build feature/entity/caption lookup before resolving URLs.
+  const imageMetaByUrn = new Map();
   for (const img of images) {
-    if (img && img.urn && img.feature) featureByUrn.set(img.urn, img.feature);
-    if (img && img.urn && img.entity) entityByUrn.set(img.urn, img.entity);
-    if (img && img.urn) captionByUrn.set(img.urn, normalizeImageModalCaption(img.l_description || img.x_luna_description || ''));
+    const urn = typeof img === 'string' ? img : (img && img.urn);
+    if (!urn) continue;
+    imageMetaByUrn.set(urn, {
+      featureUrn: (img && img.feature) || '',
+      entityUrn: (img && img.entity) || contextEntityUrn || '',
+      caption: normalizeImageModalCaption((img && (img.l_description || img.x_luna_description)) || ''),
+    });
   }
 
-  Promise.all(images.map(resolveImageUrl)).then(results => {
-    if (contextEntityUrn && document.getElementById('current-id')?.textContent !== contextEntityUrn) return;
-    const valid = results.filter(Boolean);
-    if (!valid.length) {
-      el.innerHTML = '<p class="placeholder">No images available.</p>';
-      return;
-    }
+  if (!imageMetaByUrn.size) {
+    el.innerHTML = '<p class="placeholder">No images available.</p>';
+    return;
+  }
 
-    let html = '<div class="image-grid">';
-    for (const { urn, url } of valid) {
+  // Render a placeholder grid immediately so users can start interacting while
+  // URL resolution continues in the background.
+  const gridEl = document.createElement('div');
+  gridEl.className = 'image-grid';
+  const tileByUrn = new Map();
+
+  for (const [urn, meta] of imageMetaByUrn.entries()) {
+    const short = extractShortId(urn);
+    const tileEl = document.createElement('div');
+    tileEl.className = 'image-urn-fallback';
+    tileEl.setAttribute('data-image-urn', urn);
+    if (meta.featureUrn) tileEl.setAttribute('data-feature-urn', meta.featureUrn);
+    if (meta.entityUrn && !meta.featureUrn) tileEl.setAttribute('data-entity-urn', meta.entityUrn);
+    if (meta.caption) tileEl.setAttribute('data-image-caption', meta.caption);
+    tileEl.title = urn;
+    tileEl.textContent = short;
+    gridEl.appendChild(tileEl);
+    tileByUrn.set(urn, tileEl);
+  }
+
+  el.innerHTML = '';
+  el.appendChild(gridEl);
+  invalidateImageModalSequence();
+  wireSpatialImageHoverEvents(el);
+  wireImageHoverEvents(el);
+  wireImageModalOpenEvents(el);
+
+  // Resolve each image URL independently and upgrade tiles as soon as each one resolves.
+  for (const img of images) {
+    void resolveImageUrl(img).then(result => {
+      if (!result || !result.urn) return;
+      if (contextEntityUrn && document.getElementById('current-id')?.textContent !== contextEntityUrn) return;
+
+      const currentTile = tileByUrn.get(result.urn);
+      if (!currentTile || !currentTile.isConnected || !result.url) return;
+
+      const meta = imageMetaByUrn.get(result.urn) || { featureUrn: '', entityUrn: contextEntityUrn || '', caption: '' };
+      const short = extractShortId(result.urn);
+      const linkUrl = result.iiifImageUrl || result.url;
+
+      const linkEl = document.createElement('a');
+      linkEl.href = linkUrl;
+      linkEl.target = '_blank';
+      linkEl.rel = 'noopener noreferrer';
+      linkEl.setAttribute('data-image-url', linkUrl);
+      linkEl.setAttribute('data-image-urn', result.urn);
+      if (meta.featureUrn) linkEl.setAttribute('data-feature-urn', meta.featureUrn);
+      if (meta.entityUrn && !meta.featureUrn) linkEl.setAttribute('data-entity-urn', meta.entityUrn);
+      if (meta.caption) linkEl.setAttribute('data-image-caption', meta.caption);
+
+      const imgEl = document.createElement('img');
+      imgEl.src = result.url;
+      imgEl.alt = short;
+      imgEl.title = short;
+      imgEl.loading = 'lazy';
+      linkEl.appendChild(imgEl);
+
+      // Wire only this upgraded tile before swapping into the live DOM.
+      const tempWrapper = document.createElement('div');
+      tempWrapper.appendChild(linkEl);
+      wireSpatialImageHoverEvents(tempWrapper);
+      wireImageHoverEvents(tempWrapper);
+      wireImageModalOpenEvents(tempWrapper);
+
+      currentTile.replaceWith(linkEl);
+      tileByUrn.set(result.urn, linkEl);
+      invalidateImageModalSequence();
+    });
+  }
+
+  // Lazy retry: after a delay, re-attempt IIIF fetch for tiles still in fallback state.
+  setTimeout(() => {
+    const fallbackEls = Array.from(el.querySelectorAll('.image-urn-fallback[data-image-urn]'));
+    fallbackEls.forEach(async div => {
+      if (!div.isConnected) return;
+      if (contextEntityUrn && document.getElementById('current-id')?.textContent !== contextEntityUrn) return;
+
+      const urn = div.dataset.imageUrn;
+      if (!urn) return;
+
+      const data = await fetchImageIdData(urn);
+      if (!data.iiifImageUrl || !div.isConnected) return;
+
+      const meta = imageMetaByUrn.get(urn) || { featureUrn: '', entityUrn: contextEntityUrn || '', caption: '' };
       const short = extractShortId(urn);
-      const featureUrn = featureByUrn.get(urn) || '';
-      const entityUrn = entityByUrn.get(urn) || contextEntityUrn;
-      const caption = captionByUrn.get(urn) || '';
-      const featureAttr = featureUrn ? ` data-feature-urn="${escAttr(featureUrn)}"` : '';
-      const entityAttr = entityUrn && !featureUrn ? ` data-entity-urn="${escAttr(entityUrn)}"` : '';
-      const captionAttr = caption ? ` data-image-caption="${escAttr(caption)}"` : '';
-      if (url) {
-        html += `<a href="${escAttr(url)}" target="_blank" rel="noopener noreferrer" data-image-url="${escAttr(url)}" data-image-urn="${escAttr(urn)}"${featureAttr}${entityAttr}${captionAttr}>` +
-                `<img src="${escAttr(url)}" alt="${escAttr(short)}" title="${escAttr(short)}" loading="lazy">` +
-                `</a>`;
-      } else {
-        html += `<div class="image-urn-fallback"${featureAttr}${entityAttr}${captionAttr} title="${escAttr(urn)}">${escHtml(short)}</div>`;
-      }
-    }
-    html += '</div>';
-    el.innerHTML = html;
-    invalidateImageModalSequence();
-    wireSpatialImageHoverEvents(el);
-    wireImageHoverEvents(el);
-    wireImageModalOpenEvents(el);
-  });
+      const caption = meta.caption || data.caption || '';
+      const thumbnail = buildIiifThumbnailUrl(data.iiifImageUrl);
+
+      // Pre-populate modal caches so the modal doesn't need to re-fetch.
+      if (data.caption) imageModalState.captionByImageUrn.set(urn, data.caption);
+      if (data.iiifManifestUrl) imageModalState.iiifManifestByImageUrn.set(urn, data.iiifManifestUrl);
+      if (data.lunaLandingUrl) imageModalState.lunaLandingByImageUrn.set(urn, data.lunaLandingUrl);
+      if (data.iiifImageUrl) imageModalState.iiifImageByImageUrn.set(urn, data.iiifImageUrl);
+
+      const newEl = document.createElement('a');
+      newEl.href = data.iiifImageUrl;
+      newEl.target = '_blank';
+      newEl.rel = 'noopener noreferrer';
+      newEl.setAttribute('data-image-url', data.iiifImageUrl);
+      newEl.setAttribute('data-image-urn', urn);
+      if (meta.featureUrn) newEl.setAttribute('data-feature-urn', meta.featureUrn);
+      if (meta.entityUrn && !meta.featureUrn) newEl.setAttribute('data-entity-urn', meta.entityUrn);
+      if (caption) newEl.setAttribute('data-image-caption', caption);
+
+      const imgEl = document.createElement('img');
+      imgEl.src = thumbnail;
+      imgEl.alt = short;
+      imgEl.title = short;
+      imgEl.loading = 'lazy';
+      newEl.appendChild(imgEl);
+
+      const tempWrapper = document.createElement('div');
+      tempWrapper.appendChild(newEl);
+      wireSpatialImageHoverEvents(tempWrapper);
+      wireImageHoverEvents(tempWrapper);
+      wireImageModalOpenEvents(tempWrapper);
+
+      div.replaceWith(newEl);
+      tileByUrn.set(urn, newEl);
+      invalidateImageModalSequence();
+    });
+  }, 8000);
 }
 
 function wireImageHoverEvents(containerEl) {
