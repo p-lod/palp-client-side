@@ -2454,7 +2454,18 @@ function invalidateImageModalSequence() {
   imageModalState.sequenceVersion += 1;
   imageModalState.imageSequence = [];
   imageModalState.activeSequenceIndex = -1;
-  updateImageModalNavControls();
+  if (imageModalState.isOpen) {
+    // The DOM changed while the modal is open (e.g. an async tile upgrade replaced a
+    // fallback element with a resolved image link).  Rebuild immediately so the nav
+    // controls stay enabled rather than being left in a disabled state.
+    rebuildImageModalSequence({
+      imageUrn:  imageModalState.imageUrn,
+      imageUrl:  imageModalState.imageUrl,
+      triggerEl: imageModalState.triggerEl,
+    });
+  } else {
+    updateImageModalNavControls();
+  }
 }
 
 function rebuildImageModalSequence(activePayload = null) {
