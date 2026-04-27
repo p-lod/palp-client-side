@@ -1,4 +1,17 @@
 'use strict';
+'use strict';
+
+// Utility: robustly sanitize None-like, NaN, null, undefined, and similar values
+function sanitizeValue(val) {
+  if (val == null) return '';
+  if (typeof val === 'number' && isNaN(val)) return '';
+  if (typeof val === 'string') {
+    const s = val.trim().toLowerCase();
+    if (!s || s === 'none' || s === 'null' || s === 'undefined' || s === 'nan') return '';
+    return val;
+  }
+  return val;
+}
 
 const API_BASE   = 'https://api.p-lod.org';
 const DEFAULT_ID = 'urn:p-lod:id:pompeii';
@@ -236,13 +249,13 @@ function getDisplayLabelOrFallback(label, fallback = '') {
 }
 
 function normalizeRelatedEntityItem(item) {
-  if (!item || !item.urn) return null;
+  if (!item || !sanitizeValue(item.urn)) return null;
 
-  const urn = String(item.urn);
+  const urn = sanitizeValue(item.urn);
   const fallbackLabel = extractShortId(urn);
-  const label = getDisplayLabelOrFallback(item.label, fallbackLabel);
+  const label = getDisplayLabelOrFallback(sanitizeValue(item.label), fallbackLabel);
 
-  const within = String(item.within || '').startsWith('urn:p-lod:id:')
+  const within = sanitizeValue(item.within).startsWith('urn:p-lod:id:')
     ? extractShortId(item.within)
     : '';
 
@@ -819,7 +832,7 @@ function isHttpUrl(val) {
 }
 
 function escHtml(str) {
-  return String(str)
+  return String(sanitizeValue(str))
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -827,7 +840,7 @@ function escHtml(str) {
 }
 
 function escAttr(str) {
-  return String(str)
+  return String(sanitizeValue(str))
     .replace(/&/g, '&amp;')
     .replace(/"/g, '&quot;');
 }
@@ -847,7 +860,7 @@ function flattenTriples(data) {
 }
 
 function parseGeoJson(gjStr) {
-  if (!gjStr || gjStr === 'None') return null;
+  if (!sanitizeValue(gjStr)) return null;
   try {
     return typeof gjStr === 'string' ? JSON.parse(gjStr) : gjStr;
   } catch (_) {
@@ -1005,11 +1018,11 @@ function mergePriorityImages(bestImageUrns, imageItems, contextEntityUrn = '') {
   const seenUrns = new Set();
 
   for (const bestUrn of (bestImageUrns || [])) {
-    const urn = String(bestUrn || '').trim();
+    const urn = sanitizeValue(bestUrn);
     if (!urn || seenUrns.has(urn)) continue;
     seenUrns.add(urn);
 
-    const existing = items.find(item => getImageItemUrn(item) === urn);
+    const existing = items.find(item => sanitizeValue(getImageItemUrn(item)) === urn);
     if (existing) {
       result.push(existing);
     } else {
@@ -1021,7 +1034,7 @@ function mergePriorityImages(bestImageUrns, imageItems, contextEntityUrn = '') {
   }
 
   for (const item of items) {
-    const urn = getImageItemUrn(item);
+    const urn = sanitizeValue(getImageItemUrn(item));
     if (!urn || seenUrns.has(urn)) continue;
     seenUrns.add(urn);
     result.push(item);
@@ -2010,7 +2023,7 @@ function cancelImagePaneFeaturePreviewRequest() {
 }
 
 function normalizeImageModalPayload(payload = {}, { requireImageUrl = true } = {}) {
-  const imageUrl = String(payload.imageUrl || '').trim();
+  const imageUrl = sanitizeValue(payload.imageUrl);
   if (requireImageUrl && !imageUrl) return null;
 
   const triggerEl = payload.triggerEl && document.contains(payload.triggerEl)
@@ -2019,18 +2032,18 @@ function normalizeImageModalPayload(payload = {}, { requireImageUrl = true } = {
 
   return {
     imageUrl,
-    imageUrn: String(payload.imageUrn || '').trim(),
-    contextUrn: String(payload.contextUrn || '').trim(),
-    imageCaption: normalizeImageModalCaption(payload.imageCaption || ''),
-    iiifManifestUrl: String(payload.iiifManifestUrl || '').trim(),
-    iiifImageUrl: String(payload.iiifImageUrl || '').trim(),
+    imageUrn: sanitizeValue(payload.imageUrn),
+    contextUrn: sanitizeValue(payload.contextUrn),
+    imageCaption: normalizeImageModalCaption(sanitizeValue(payload.imageCaption)),
+    iiifManifestUrl: sanitizeValue(payload.iiifManifestUrl),
+    iiifImageUrl: sanitizeValue(payload.iiifImageUrl),
     triggerEl,
   };
 }
 
 function normalizeImageModalCaption(raw) {
-  const text = String(raw || '').replace(/\r\n/g, '\n').trim();
-  return text;
+  const text = sanitizeValue(raw);
+  return String(text).replace(/\r\n/g, '\n').trim();
 }
 
 function formatImageModalCaptionHtml(caption) {
@@ -4900,14 +4913,14 @@ function renderImages(images, el, contextEntityUrn = '') {
     return;
   }
 
-  // Build feature/entity/caption lookup before resolving URLs.
+  // Filter out images with no usable URN (after sanitization)
   const imageMetaByUrn = new Map();
   for (const img of images) {
-    const urn = typeof img === 'string' ? img : (img && img.urn);
+    const urn = sanitizeValue(typeof img === 'string' ? img : (img && img.urn));
     if (!urn) continue;
     imageMetaByUrn.set(urn, {
-      featureUrn: (img && img.feature) || '',
-      entityUrn: (img && img.entity) || contextEntityUrn || '',
+      featureUrn: sanitizeValue(img && img.feature),
+      entityUrn: sanitizeValue((img && img.entity) || contextEntityUrn),
       caption: normalizeImageModalCaption((img && (img.l_description || img.x_luna_description)) || ''),
     });
   }
@@ -4917,8 +4930,12 @@ function renderImages(images, el, contextEntityUrn = '') {
     return;
   }
 
-  // Render a placeholder grid immediately so users can start interacting while
-  // URL resolution continues in the background.
+  if (!imageMetaByUrn.size) {
+    el.innerHTML = '<p class="placeholder">No images available.</p>';
+    return;
+  }
+
+  // Only create the grid if there are valid images
   const gridEl = document.createElement('div');
   gridEl.className = 'image-grid';
   const tileByUrn = new Map();
@@ -5185,26 +5202,26 @@ function renderConceptImages(depictedItems, el, bestImageUrns = [], contextEntit
   const seenImageUrns = new Set();
 
   for (const imageUrn of bestImageUrns) {
-    const urn = String(imageUrn || '').trim();
+    const urn = sanitizeValue(imageUrn);
     if (!urn || seenImageUrns.has(urn)) continue;
     seenImageUrns.add(urn);
 
     const matchingItem = items.find(item => {
-      const itemImageUrn = String(item.best_image || item.urn || '').trim();
+      const itemImageUrn = sanitizeValue(item.best_image || item.urn);
       return itemImageUrn === urn;
     });
 
     cards.push({
       imageUrn: urn,
-      entityUrn: String((matchingItem && matchingItem.urn) || contextEntityUrn || '').trim(),
+      entityUrn: sanitizeValue((matchingItem && matchingItem.urn) || contextEntityUrn),
       url: matchingItem ? (matchingItem.l_img_url || null) : null,
       caption: normalizeImageModalCaption((matchingItem && (matchingItem.l_description || matchingItem.x_luna_description)) || ''),
     });
   }
 
   for (const item of items) {
-    const entityUrn = String(item.urn || '').trim();
-    const imageUrn = String(item.best_image || entityUrn).trim();
+    const entityUrn = sanitizeValue(item.urn);
+    const imageUrn = sanitizeValue(item.best_image || entityUrn);
     if (!imageUrn || seenImageUrns.has(imageUrn)) continue;
     seenImageUrns.add(imageUrn);
 
