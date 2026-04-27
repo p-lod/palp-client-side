@@ -91,6 +91,9 @@
     .intro table th { padding-bottom: 0.5em; }
     .intro table td a { display: block; }
     .intro table td a:has(img) { overflow: hidden; border-radius: 5px; box-shadow: 2px 4px 10px rgba(0,0,0,0.45); }
+    .intro table td a:has(img) img { transition: transform 300ms ease-out; transform-origin: center; }
+    .intro table td a:has(img):hover img,
+    .intro table td a:has(img):focus-visible img { transform: scale(1.02); }
     .intro table img { width: 100%; height: 12vw; object-fit: cover; object-position: center; display: block; }
     .intro .bluesky-icon { height: 1em; vertical-align: middle; }
   </style>
@@ -162,7 +165,7 @@
                 <a href="/browse/#r1-i9-p5">House of the Floral Cubicula</a>
               </td>
               <td>
-                <a href="/browse/#r1-i10-p4-space-4">Room with scenes from Troy</a>
+                <a href="/browse/#r1-i10-p4-space-4">Room with Scenes from Troy</a>
               </td>
             </tr>
 <tr>
