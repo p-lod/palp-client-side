@@ -4889,100 +4889,145 @@ function renderImages(images, el, contextEntityUrn = '') {
     return;
   }
 
-  renderLoadingInSlot(el, 'Loading images…');
-
-  // Build feature URN lookup before resolving URLs (resolveImageUrl discards the feature field)
-  const featureByUrn = new Map();
-  const entityByUrn = new Map();
-  const captionByUrn = new Map();
+  // Build feature/entity/caption lookup before resolving URLs.
+  const imageMetaByUrn = new Map();
   for (const img of images) {
-    if (img && img.urn && img.feature) featureByUrn.set(img.urn, img.feature);
-    if (img && img.urn && img.entity) entityByUrn.set(img.urn, img.entity);
-    if (img && img.urn) captionByUrn.set(img.urn, normalizeImageModalCaption(img.l_description || img.x_luna_description || ''));
+    const urn = typeof img === 'string' ? img : (img && img.urn);
+    if (!urn) continue;
+    imageMetaByUrn.set(urn, {
+      featureUrn: (img && img.feature) || '',
+      entityUrn: (img && img.entity) || contextEntityUrn || '',
+      caption: normalizeImageModalCaption((img && (img.l_description || img.x_luna_description)) || ''),
+    });
   }
 
-  Promise.all(images.map(resolveImageUrl)).then(results => {
-    if (contextEntityUrn && document.getElementById('current-id')?.textContent !== contextEntityUrn) return;
-    const valid = results.filter(Boolean);
-    if (!valid.length) {
-      el.innerHTML = '<p class="placeholder">No images available.</p>';
-      return;
-    }
+  if (!imageMetaByUrn.size) {
+    el.innerHTML = '<p class="placeholder">No images available.</p>';
+    return;
+  }
 
-    let html = '<div class="image-grid">';
-    for (const { urn, url, iiifImageUrl } of valid) {
-      const short = extractShortId(urn);
-      const featureUrn = featureByUrn.get(urn) || '';
-      const entityUrn = entityByUrn.get(urn) || contextEntityUrn;
-      const caption = captionByUrn.get(urn) || '';
-      const featureAttr = featureUrn ? ` data-feature-urn="${escAttr(featureUrn)}"` : '';
-      const entityAttr = entityUrn && !featureUrn ? ` data-entity-urn="${escAttr(entityUrn)}"` : '';
-      const captionAttr = caption ? ` data-image-caption="${escAttr(caption)}"` : '';
-      // Use full-res URL for the link target and modal; thumbnail only for <img src>
-      const linkUrl = iiifImageUrl || url;
-      if (url) {
-        html += `<a href="${escAttr(linkUrl)}" target="_blank" rel="noopener noreferrer" data-image-url="${escAttr(linkUrl)}" data-image-urn="${escAttr(urn)}"${featureAttr}${entityAttr}${captionAttr}>` +
-                `<img src="${escAttr(url)}" alt="${escAttr(short)}" title="${escAttr(short)}" loading="lazy">` +
-                `</a>`;
-      } else {
-        html += `<div class="image-urn-fallback" data-image-urn="${escAttr(urn)}"${featureAttr}${entityAttr}${captionAttr} title="${escAttr(urn)}">${escHtml(short)}</div>`;
-      }
-    }
-    html += '</div>';
-    el.innerHTML = html;
-    invalidateImageModalSequence();
-    wireSpatialImageHoverEvents(el);
-    wireImageHoverEvents(el);
-    wireImageModalOpenEvents(el);
+  // Render a placeholder grid immediately so users can start interacting while
+  // URL resolution continues in the background.
+  const gridEl = document.createElement('div');
+  gridEl.className = 'image-grid';
+  const tileByUrn = new Map();
 
-    // Lazy retry: after a delay, re-attempt IIIF fetch for any fallback placeholder tiles
-    // that failed on initial load (e.g. due to a slow or momentarily flaky connection).
-    // The <img src> tiles need no retry — the browser keeps trying those on its own.
+  for (const [urn, meta] of imageMetaByUrn.entries()) {
+    const short = extractShortId(urn);
+    const tileEl = document.createElement('div');
+    tileEl.className = 'image-urn-fallback';
+    tileEl.setAttribute('data-image-urn', urn);
+    if (meta.featureUrn) tileEl.setAttribute('data-feature-urn', meta.featureUrn);
+    if (meta.entityUrn && !meta.featureUrn) tileEl.setAttribute('data-entity-urn', meta.entityUrn);
+    if (meta.caption) tileEl.setAttribute('data-image-caption', meta.caption);
+    tileEl.title = urn;
+    tileEl.textContent = short;
+    gridEl.appendChild(tileEl);
+    tileByUrn.set(urn, tileEl);
+  }
+
+  el.innerHTML = '';
+  el.appendChild(gridEl);
+  invalidateImageModalSequence();
+  wireSpatialImageHoverEvents(el);
+  wireImageHoverEvents(el);
+  wireImageModalOpenEvents(el);
+
+  // Resolve each image URL independently and upgrade tiles as soon as each one resolves.
+  for (const img of images) {
+    void resolveImageUrl(img).then(result => {
+      if (!result || !result.urn) return;
+      if (contextEntityUrn && document.getElementById('current-id')?.textContent !== contextEntityUrn) return;
+
+      const currentTile = tileByUrn.get(result.urn);
+      if (!currentTile || !currentTile.isConnected || !result.url) return;
+
+      const meta = imageMetaByUrn.get(result.urn) || { featureUrn: '', entityUrn: contextEntityUrn || '', caption: '' };
+      const short = extractShortId(result.urn);
+      const linkUrl = result.iiifImageUrl || result.url;
+
+      const linkEl = document.createElement('a');
+      linkEl.href = linkUrl;
+      linkEl.target = '_blank';
+      linkEl.rel = 'noopener noreferrer';
+      linkEl.setAttribute('data-image-url', linkUrl);
+      linkEl.setAttribute('data-image-urn', result.urn);
+      if (meta.featureUrn) linkEl.setAttribute('data-feature-urn', meta.featureUrn);
+      if (meta.entityUrn && !meta.featureUrn) linkEl.setAttribute('data-entity-urn', meta.entityUrn);
+      if (meta.caption) linkEl.setAttribute('data-image-caption', meta.caption);
+
+      const imgEl = document.createElement('img');
+      imgEl.src = result.url;
+      imgEl.alt = short;
+      imgEl.title = short;
+      imgEl.loading = 'lazy';
+      linkEl.appendChild(imgEl);
+
+      // Wire only this upgraded tile before swapping into the live DOM.
+      const tempWrapper = document.createElement('div');
+      tempWrapper.appendChild(linkEl);
+      wireSpatialImageHoverEvents(tempWrapper);
+      wireImageHoverEvents(tempWrapper);
+      wireImageModalOpenEvents(tempWrapper);
+
+      currentTile.replaceWith(linkEl);
+      tileByUrn.set(result.urn, linkEl);
+      invalidateImageModalSequence();
+    });
+  }
+
+  // Lazy retry: after a delay, re-attempt IIIF fetch for tiles still in fallback state.
+  setTimeout(() => {
     const fallbackEls = Array.from(el.querySelectorAll('.image-urn-fallback[data-image-urn]'));
-    if (fallbackEls.length) {
-      setTimeout(() => {
-        fallbackEls.forEach(async div => {
-          if (!div.isConnected) return;
-          const urn = div.dataset.imageUrn;
-          if (!urn) return;
-          const data = await fetchImageIdData(urn);
-          if (!data.iiifImageUrl || !div.isConnected) return;
-          const thumbnail = buildIiifThumbnailUrl(data.iiifImageUrl);
-          const short = extractShortId(urn);
-          const caption = captionByUrn.get(urn) || data.caption || '';
-          // Pre-populate modal caches so the modal doesn't need to re-fetch.
-          if (data.caption) imageModalState.captionByImageUrn.set(urn, data.caption);
-          if (data.iiifManifestUrl) imageModalState.iiifManifestByImageUrn.set(urn, data.iiifManifestUrl);
-          if (data.lunaLandingUrl) imageModalState.lunaLandingByImageUrn.set(urn, data.lunaLandingUrl);
-          if (data.iiifImageUrl) imageModalState.iiifImageByImageUrn.set(urn, data.iiifImageUrl);
-          // Build the replacement <a><img></a> element.
-          const newEl = document.createElement('a');
-          newEl.href = data.iiifImageUrl;
-          newEl.target = '_blank';
-          newEl.rel = 'noopener noreferrer';
-          newEl.setAttribute('data-image-url', data.iiifImageUrl);
-          newEl.setAttribute('data-image-urn', urn);
-          if (div.dataset.featureUrn) newEl.setAttribute('data-feature-urn', div.dataset.featureUrn);
-          if (div.dataset.entityUrn) newEl.setAttribute('data-entity-urn', div.dataset.entityUrn);
-          if (caption) newEl.setAttribute('data-image-caption', caption);
-          const img = document.createElement('img');
-          img.src = thumbnail;
-          img.alt = short;
-          img.title = short;
-          img.loading = 'lazy';
-          newEl.appendChild(img);
-          // Wire via a temporary wrapper so only this single element gets new listeners.
-          const tempWrapper = document.createElement('div');
-          tempWrapper.appendChild(newEl);
-          wireImageHoverEvents(tempWrapper);
-          wireImageModalOpenEvents(tempWrapper);
-          // Swap into the live DOM.
-          div.replaceWith(newEl);
-          invalidateImageModalSequence();
-        });
-      }, 8000);
-    }
-  });
+    fallbackEls.forEach(async div => {
+      if (!div.isConnected) return;
+      if (contextEntityUrn && document.getElementById('current-id')?.textContent !== contextEntityUrn) return;
+
+      const urn = div.dataset.imageUrn;
+      if (!urn) return;
+
+      const data = await fetchImageIdData(urn);
+      if (!data.iiifImageUrl || !div.isConnected) return;
+
+      const meta = imageMetaByUrn.get(urn) || { featureUrn: '', entityUrn: contextEntityUrn || '', caption: '' };
+      const short = extractShortId(urn);
+      const caption = meta.caption || data.caption || '';
+      const thumbnail = buildIiifThumbnailUrl(data.iiifImageUrl);
+
+      // Pre-populate modal caches so the modal doesn't need to re-fetch.
+      if (data.caption) imageModalState.captionByImageUrn.set(urn, data.caption);
+      if (data.iiifManifestUrl) imageModalState.iiifManifestByImageUrn.set(urn, data.iiifManifestUrl);
+      if (data.lunaLandingUrl) imageModalState.lunaLandingByImageUrn.set(urn, data.lunaLandingUrl);
+      if (data.iiifImageUrl) imageModalState.iiifImageByImageUrn.set(urn, data.iiifImageUrl);
+
+      const newEl = document.createElement('a');
+      newEl.href = data.iiifImageUrl;
+      newEl.target = '_blank';
+      newEl.rel = 'noopener noreferrer';
+      newEl.setAttribute('data-image-url', data.iiifImageUrl);
+      newEl.setAttribute('data-image-urn', urn);
+      if (meta.featureUrn) newEl.setAttribute('data-feature-urn', meta.featureUrn);
+      if (meta.entityUrn && !meta.featureUrn) newEl.setAttribute('data-entity-urn', meta.entityUrn);
+      if (caption) newEl.setAttribute('data-image-caption', caption);
+
+      const imgEl = document.createElement('img');
+      imgEl.src = thumbnail;
+      imgEl.alt = short;
+      imgEl.title = short;
+      imgEl.loading = 'lazy';
+      newEl.appendChild(imgEl);
+
+      const tempWrapper = document.createElement('div');
+      tempWrapper.appendChild(newEl);
+      wireSpatialImageHoverEvents(tempWrapper);
+      wireImageHoverEvents(tempWrapper);
+      wireImageModalOpenEvents(tempWrapper);
+
+      div.replaceWith(newEl);
+      tileByUrn.set(urn, newEl);
+      invalidateImageModalSequence();
+    });
+  }, 8000);
 }
 
 function wireImageHoverEvents(containerEl) {
