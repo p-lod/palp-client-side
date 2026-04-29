@@ -2327,7 +2327,7 @@ async function fetchImageIdData(imageUrn) {
 
 function requestImageModalCaptionIfMissing() {
   const imageUrn = imageModalState.imageUrn;
-  if (!imageUrn || (imageModalState.imageCaption && imageModalState.lunaLandingUrl && imageModalState.iiifManifestUrl)) return;
+  if (!imageUrn || (imageModalState.imageCaption && imageModalState.lunaLandingUrl && imageModalState.iiifManifestUrl && imageModalState.iiifImageUrl)) return;
 
   if (imageModalState.captionByImageUrn.has(imageUrn)) {
     const cachedCaption = imageModalState.captionByImageUrn.get(imageUrn) || '';
@@ -2592,25 +2592,35 @@ function stepImageModalSequence(direction) {
 }
 
 function hasSameImageModalPayload(payload) {
-  return !!payload
-    && imageModalState.imageUrl === payload.imageUrl
-    && imageModalState.imageUrn === payload.imageUrn
-    && imageModalState.contextUrn === payload.contextUrn
-    && imageModalState.imageCaption === payload.imageCaption
-    && imageModalState.lunaLandingUrl === (payload.lunaLandingUrl || '')
-    && imageModalState.iiifManifestUrl === (payload.iiifManifestUrl || '')
-    && imageModalState.iiifImageUrl === (payload.iiifImageUrl || '');
+  if (!payload) return false;
+  if (imageModalState.imageUrn !== payload.imageUrn) return false;
+  if (imageModalState.imageUrl !== payload.imageUrl) return false;
+  if (imageModalState.contextUrn !== payload.contextUrn) return false;
+
+  // For metadata, only consider it "different" if the payload provides a
+  // non-empty value that differs from our state. We don't want to clear
+  // high-res info just because a hover event payload is missing it.
+  if (payload.imageCaption && imageModalState.imageCaption !== payload.imageCaption) return false;
+  if (payload.lunaLandingUrl && imageModalState.lunaLandingUrl !== payload.lunaLandingUrl) return false;
+  if (payload.iiifManifestUrl && imageModalState.iiifManifestUrl !== payload.iiifManifestUrl) return false;
+  if (payload.iiifImageUrl && imageModalState.iiifImageUrl !== payload.iiifImageUrl) return false;
+
+  return true;
 }
 
 function applyImageModalPayload(payload, { updateTriggerEl = false } = {}) {
+  const urnChanged = imageModalState.imageUrn !== payload.imageUrn;
   imageModalState.captionRequestToken += 1;
+
   imageModalState.imageUrl = payload.imageUrl;
   imageModalState.imageUrn = payload.imageUrn;
   imageModalState.contextUrn = payload.contextUrn;
-  imageModalState.imageCaption = payload.imageCaption || '';
-  imageModalState.lunaLandingUrl = payload.lunaLandingUrl || '';
-  imageModalState.iiifManifestUrl = payload.iiifManifestUrl || '';
-  imageModalState.iiifImageUrl = payload.iiifImageUrl || '';
+
+  if (urnChanged || payload.imageCaption) imageModalState.imageCaption = payload.imageCaption || '';
+  if (urnChanged || payload.lunaLandingUrl) imageModalState.lunaLandingUrl = payload.lunaLandingUrl || '';
+  if (urnChanged || payload.iiifManifestUrl) imageModalState.iiifManifestUrl = payload.iiifManifestUrl || '';
+  if (urnChanged || payload.iiifImageUrl) imageModalState.iiifImageUrl = payload.iiifImageUrl || '';
+
   if (updateTriggerEl) imageModalState.triggerEl = payload.triggerEl || null;
 }
 
@@ -3245,6 +3255,22 @@ function bindImageModalZoomEvents() {
 
   imageModalState.imgEl.addEventListener('load', () => {
     applyImageModalImageTransform();
+  });
+
+  imageModalState.imgEl.addEventListener('error', () => {
+    // If the iiif URL failed but we have a different fallback imageUrl, revert to it.
+    const failedSrc = imageModalState.imgEl.src;
+    const fallback = imageModalState.imageUrl;
+    if (
+      failedSrc &&
+      fallback &&
+      imageModalState.isOpen &&
+      failedSrc !== fallback &&
+      imageModalState.activeDisplayImageUrl !== fallback
+    ) {
+      imageModalState.imgEl.src = fallback;
+      imageModalState.activeDisplayImageUrl = fallback;
+    }
   });
 
   if (imageModalState.zoomInBtnEl) {
