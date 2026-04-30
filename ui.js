@@ -3655,16 +3655,18 @@ function wireImageModalOpenEvents(containerEl) {
       if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
 
       const imageUrl = el.dataset.imageUrl;
-      if (!imageUrl) return;
+      const imageUrn = el.dataset.imageUrn || el.dataset.entityUrn || '';
+      if (!imageUrl && !imageUrn) return;
 
       e.preventDefault();
       e.stopPropagation();
 
       paneEvents.emit(UI_EVENT_IMAGE_MODAL_OPEN, {
-        imageUrl,
-        imageUrn: el.dataset.imageUrn || el.dataset.entityUrn || '',
+        imageUrl: imageUrl || '',
+        imageUrn,
         contextUrn: el.dataset.featureUrn || el.dataset.entityUrn || '',
         imageCaption: el.dataset.imageCaption || '',
+        requireImageUrl: !!imageUrl,
         triggerEl: el,
       });
     });
@@ -5240,7 +5242,7 @@ function renderConceptImages(depictedItems, el, bestImageUrns = [], contextEntit
     cards.push({
       imageUrn: urn,
       entityUrn: sanitizeValue((matchingItem && matchingItem.urn) || contextEntityUrn),
-      url: matchingItem ? (matchingItem.l_img_url || null) : null,
+      url: sanitizeValue(matchingItem && matchingItem.l_img_url) || null,
       caption: normalizeImageModalCaption((matchingItem && (matchingItem.l_description || matchingItem.x_luna_description)) || ''),
     });
   }
@@ -5254,7 +5256,7 @@ function renderConceptImages(depictedItems, el, bestImageUrns = [], contextEntit
     cards.push({
       imageUrn,
       entityUrn,
-      url: item.l_img_url || null,
+      url: sanitizeValue(item.l_img_url) || null,
       caption: normalizeImageModalCaption(item.l_description || item.x_luna_description || ''),
     });
   }
