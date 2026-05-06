@@ -17,6 +17,7 @@ const API_BASE   = 'https://api.p-lod.org';
 const DEFAULT_ID = 'urn:p-lod:id:pompeii';
 const POMPEIAN_WALL_PAINTING_STYLE_TYPE = 'urn:p-lod:id:pompeian-wall-painting-style';
 const SPACE_CHARACTERIZATION_TYPE = 'urn:p-lod:id:space-characterization';
+const LUNA_IMAGE_TYPE = 'urn:p-lod:id:luna-image';
 
 // Types that have spatial geometry and spatial children
 const SPATIAL_TYPES = new Set([
@@ -48,6 +49,10 @@ const PREDICATE_LABELS = {
   'urn:p-lod:id:getty-lod-url': 'Getty LOD',
   'urn:p-lod:id:has-pompeian-wall-painting-style': 'Wall-painting Style',
   'urn:p-lod:id:has-space-characterization': "Space characterization",
+  'urn:p-lod:id:depicts':             'Depicts',
+  'urn:p-lod:id:x-luna-media-id':    'Luna Media ID',
+  'urn:p-lod:id:x-luna-record-id':   'Luna Record ID',
+  'urn:p-lod:id:x-luna-description': 'Caption',
 };
 
 // Predicates omitted from the info table (handled separately or not display-useful)
@@ -127,6 +132,12 @@ const LAYOUT_DEFAULTS_BY_RESOURCE_PROFILE = Object.freeze({
     'bottom-left': PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER,
     'bottom-right': PANE_CONTENT_TYPES.IMAGES,
   },
+  'luna-image': {
+    'top-left': PANE_CONTENT_TYPES.INFO,
+    'top-right': PANE_CONTENT_TYPES.MAP,
+    'bottom-left': PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER,
+    'bottom-right': PANE_CONTENT_TYPES.IMAGES,
+  },
 });
 
 const PANE_CONTENT_META = Object.freeze({
@@ -153,6 +164,7 @@ const IMAGE_PANE_BEHAVIOR = Object.freeze({
   SPATIAL_PRELOAD: 'spatial-preload',
   CONCEPT_PRELOAD: 'concept-preload',
   FEATURE_HOVER_PREVIEW: 'feature-hover-preview',
+  LUNA_IMAGE_DIRECT: 'luna-image-direct',
 });
 
 const paneEvents = (() => {
@@ -1296,6 +1308,7 @@ function createResourceHandler({
   spatialMapSource = 'spatial-children',
   forceSelfGeojsonFromEndpoint = false,
   hierarchySeedSource = 'none',
+  customMapDataFetcher = null,
 }) {
   return Object.freeze({
     key,
@@ -1328,9 +1341,11 @@ function createResourceHandler({
     getImagesPromise(shortId) {
       if (imagesPaneBehavior === IMAGE_PANE_BEHAVIOR.CONCEPT_PRELOAD) return Promise.resolve(null);
       if (imagesPaneBehavior === IMAGE_PANE_BEHAVIOR.FEATURE_HOVER_PREVIEW) return Promise.resolve([]);
+      if (imagesPaneBehavior === IMAGE_PANE_BEHAVIOR.LUNA_IMAGE_DIRECT) return Promise.resolve(null);
       return fetchEntityImages(shortId);
     },
     getMapDataPromise(shortId) {
+      if (customMapDataFetcher) return customMapDataFetcher(shortId);
       if (isSpatial) {
         if (spatialMapSource === 'none') return Promise.resolve([]);
         return spatialMapSource === 'depicted-where-fallback'
@@ -1361,6 +1376,16 @@ function createResourceHandler({
       };
     },
     renderImagesPane({ bestImageUrns, imagesResult, childItems, slotEl, entityUrn }) {
+      if (imagesPaneBehavior === IMAGE_PANE_BEHAVIOR.LUNA_IMAGE_DIRECT) {
+        setImagePaneContext({
+          behavior: imagesPaneBehavior,
+          entityUrn,
+          slotEl,
+          renderBase: () => renderLunaImageDirect(entityUrn, slotEl),
+        });
+        return;
+      }
+
       if (imagesPaneBehavior === IMAGE_PANE_BEHAVIOR.CONCEPT_PRELOAD) {
         setImagePaneContext({
           behavior: imagesPaneBehavior,
@@ -1437,9 +1462,17 @@ const SPACE_CHARACTERIZATION_RESOURCE_HANDLER = createResourceHandler({
   hierarchySeedSource: 'geojson-features',
 });
 
+const LUNA_IMAGE_RESOURCE_HANDLER = createResourceHandler({
+  key: 'luna-image',
+  profile: 'luna-image',
+  imagesPaneBehavior: IMAGE_PANE_BEHAVIOR.LUNA_IMAGE_DIRECT,
+  customMapDataFetcher: (shortId) => fetchLunaImageMapData(`urn:p-lod:id:${shortId}`),
+});
+
 const RESOURCE_TYPE_HANDLERS = Object.freeze({
   [POMPEIAN_WALL_PAINTING_STYLE_TYPE]: WALL_PAINTING_STYLE_RESOURCE_HANDLER,
   [SPACE_CHARACTERIZATION_TYPE]: SPACE_CHARACTERIZATION_RESOURCE_HANDLER,
+  [LUNA_IMAGE_TYPE]: LUNA_IMAGE_RESOURCE_HANDLER,
 });
 
 const RESOURCE_FAMILY_HANDLERS = Object.freeze({
@@ -2105,6 +2138,7 @@ const LUNA_MANIFEST_RETRY_BASE_MS = 500;
 const LUNA_MANIFEST_RETRY_MAX_MS = 12000;
 const iiifImageUrlByManifestUrlCache = new Map();
 const pendingIiifImageUrlByManifestUrl = new Map();
+const lunaManifestJsonCache = new Map();
 
 const API_ID_FETCH_MAX_RETRIES = 5;
 const API_ID_RETRY_BASE_MS = 300;
@@ -2225,6 +2259,7 @@ async function fetchIiifImageUrlFromManifest(iiifManifestUrl) {
   const pending = lunaManifestFetchLimit(async () => {
     const manifest = await fetchIiifManifestJsonWithRetry(iiifManifestUrl);
     if (!manifest) return '';
+    lunaManifestJsonCache.set(iiifManifestUrl, manifest);
     const iiifImageUrl = extractIiifImageUrlFromManifest(manifest);
     if (iiifImageUrl) iiifImageUrlByManifestUrlCache.set(iiifManifestUrl, iiifImageUrl);
     return iiifImageUrl;
@@ -2239,6 +2274,73 @@ async function fetchIiifImageUrlFromManifest(iiifManifestUrl) {
   } catch (_) {
     return '';
   }
+}
+
+async function fetchLunaManifestJson(manifestUrl) {
+  if (!manifestUrl) return null;
+  if (lunaManifestJsonCache.has(manifestUrl)) return lunaManifestJsonCache.get(manifestUrl);
+  // If a manifest fetch is already in flight (from fetchIiifImageUrlFromManifest), wait for it
+  if (pendingIiifImageUrlByManifestUrl.has(manifestUrl)) {
+    await pendingIiifImageUrlByManifestUrl.get(manifestUrl).catch(() => {});
+    if (lunaManifestJsonCache.has(manifestUrl)) return lunaManifestJsonCache.get(manifestUrl);
+  }
+  return lunaManifestFetchLimit(async () => {
+    if (lunaManifestJsonCache.has(manifestUrl)) return lunaManifestJsonCache.get(manifestUrl);
+    const manifest = await fetchIiifManifestJsonWithRetry(manifestUrl);
+    if (manifest) lunaManifestJsonCache.set(manifestUrl, manifest);
+    return manifest || null;
+  });
+}
+
+function normalizeIiifString(val) {
+  if (!val) return '';
+  if (typeof val === 'string') return sanitizeValue(val);
+  if (typeof val === 'object') {
+    for (const arr of Object.values(val)) {
+      if (Array.isArray(arr) && arr.length) return sanitizeValue(String(arr[0]));
+    }
+  }
+  return '';
+}
+
+async function renderLunaImageMetadataPane(entityUrn, slotEl) {
+  if (!slotEl) return;
+  slotEl.innerHTML = '<p class="placeholder">Loading Luna metadata…</p>';
+
+  const triples = triplesByUrnCache.get(entityUrn);
+  const manifestUrl = triples ? deriveIiifManifestUrlFromTriples(entityUrn, triples) : '';
+
+  if (!manifestUrl) {
+    slotEl.innerHTML = '<p class="placeholder">No Luna metadata available.</p>';
+    return;
+  }
+
+  const manifest = await fetchLunaManifestJson(manifestUrl);
+
+  if (!slotEl.isConnected) return;
+
+  const manifestMeta = Array.isArray(manifest?.metadata) ? manifest.metadata : [];
+  const canvasMeta   = Array.isArray(manifest?.sequences?.[0]?.canvases?.[0]?.metadata)
+                       ? manifest.sequences[0].canvases[0].metadata : [];
+  const metaItems = manifestMeta.length ? manifestMeta : canvasMeta;
+  if (!metaItems.length) {
+    slotEl.innerHTML = '<p class="placeholder">No Luna metadata available.</p>';
+    return;
+  }
+
+  let html = '<div class="luna-metadata-pane"><table class="luna-metadata-table"><tbody>';
+  for (const item of metaItems) {
+    const label = normalizeIiifString(item.label);
+    const value = normalizeIiifString(item.value);
+    if (!label || !value) continue;
+    const cellContent = isHttpUrl(value)
+      ? `<a href="${escAttr(value)}" target="_blank" rel="noopener noreferrer">${escHtml(value)}</a>`
+      : escHtml(value);
+    html += `<tr><th>${escHtml(label)}</th><td>${cellContent}</td></tr>`;
+  }
+  html += '</tbody></table></div>';
+
+  slotEl.innerHTML = html;
 }
 
 async function fetchTriplesForUrnById(urn) {
@@ -4834,6 +4936,47 @@ function wireHierarchyInteractions(slotEl) {
 
 // ── Panel: Info ───────────────────────────────────────────────────────────────
 
+function renderLunaImageInfoSection(triples, entityUrn) {
+  let html = '';
+
+  const caption = sanitizeValue((triples['urn:p-lod:id:x-luna-description'] || [])[0] || '');
+  if (caption) {
+    html += `<p class="luna-image-caption">${escHtml(caption)}</p>`;
+  }
+
+  const depictsVals = (triples['urn:p-lod:id:depicts'] || []).filter(v => sanitizeValue(v));
+  if (depictsVals.length) {
+    const chips = depictsVals.map(v => {
+      const short = extractShortId(v);
+      return `<span class="info-entity-chip-shell"><button class="info-depicted-entity-chip info-location-chip" data-navigate="${escAttr(short)}"><span class="info-action-chip-label">${escHtml(short)}</span></button></span>`;
+    }).join('');
+    html += `<div class="info-luna-image-row"><span class="info-luna-image-label">Depicts</span><span class="info-luna-image-chips">${chips}</span></div>`;
+  }
+
+  const lunaUrlPreds = Object.keys(triples)
+    .filter(p => /^urn:p-lod:id:x-luna-url-\d+$/.test(p))
+    .sort();
+  const iiifManifestUrl = deriveIiifManifestUrlFromTriples(entityUrn, triples);
+
+  const urlChips = [];
+  for (const pred of lunaUrlPreds) {
+    for (const val of (triples[pred] || [])) {
+      if (!sanitizeValue(val) || !isHttpUrl(val)) continue;
+      const urlNum = pred.replace('urn:p-lod:id:x-luna-url-', '');
+      urlChips.push(`<a class="info-luna-url-chip" href="${escAttr(val)}" target="_blank" rel="noopener noreferrer">URL ${escHtml(urlNum)}</a>`);
+    }
+  }
+  if (iiifManifestUrl) {
+    urlChips.push(`<a class="info-luna-url-chip info-iiif-manifest-chip" href="${escAttr(iiifManifestUrl)}" target="_blank" rel="noopener noreferrer">IIIF Manifest</a>`);
+  }
+
+  if (urlChips.length) {
+    html += `<div class="info-luna-image-row"><span class="info-luna-image-label">Luna Image URLs and IIIF Manifest</span><span class="info-luna-image-chips">${urlChips.join('')}</span></div>`;
+  }
+
+  return html;
+}
+
 async function renderInfo(triples, el, shortId = '', resourceProfile = 'default', entityUrn = '') {
   if (!el) return;
 
@@ -4865,10 +5008,17 @@ async function renderInfo(triples, el, shortId = '', resourceProfile = 'default'
 
   html += chipSectionConfigs.map(renderInfoEntityRowLoading).join('');
 
+  if (resourceProfile === 'luna-image') {
+    html += renderLunaImageInfoSection(triples, entityUrn);
+  }
+
   html += '<table><tbody>';
   for (const [pred, vals] of Object.entries(triples)) {
     if (SKIP_PREDICATES.has(pred) || isExternalLinkPredicate(pred)) continue;
     if (suppressedPredicateTails.has(getPredicateTail(pred))) continue;
+    if (resourceProfile === 'luna-image') {
+      if (pred === 'urn:p-lod:id:depicts' || /^urn:p-lod:id:x-/.test(pred)) continue;
+    }
     const predLabel   = humanizePredicate(pred);
     const cellContent = vals.map(v => {
       if (isHttpUrl(v)) {
@@ -4902,6 +5052,191 @@ async function renderInfo(triples, el, shortId = '', resourceProfile = 'default'
 }
 
 // ── Panel: Images ─────────────────────────────────────────────────────────────
+
+function createIiifViewer(viewEl) {
+  if (!viewEl) return;
+  const imgEl        = viewEl.querySelector('.iiif-viewer-img');
+  if (!imgEl) return;
+
+  const zoomInBtn    = viewEl.querySelector('[data-iiif="zoom-in"]');
+  const zoomOutBtn   = viewEl.querySelector('[data-iiif="zoom-out"]');
+  const zoomResetBtn = viewEl.querySelector('[data-iiif="zoom-reset"]');
+  const adjustBtn    = viewEl.querySelector('[data-iiif="toggle-filters"]');
+  const filterPanel  = viewEl.querySelector('.iiif-viewer-filter-controls');
+  const brightnessEl = viewEl.querySelector('[data-iiif="filter-brightness"]');
+  const contrastEl   = viewEl.querySelector('[data-iiif="filter-contrast"]');
+  const saturationEl = viewEl.querySelector('[data-iiif="filter-saturation"]');
+  const grayscaleEl  = viewEl.querySelector('[data-iiif="filter-grayscale"]');
+  const invertEl     = viewEl.querySelector('[data-iiif="filter-invert"]');
+  const filterResetBtn = viewEl.querySelector('[data-iiif="filter-reset"]');
+
+  const ZOOM_MIN = 1, ZOOM_MAX = 6, ZOOM_STEP = 1.2;
+  const FILTER_DEFAULTS = Object.freeze({ brightness: 100, contrast: 100, saturation: 100, grayscale: 0, invert: 0 });
+
+  const zoom   = { scale: 1, panX: 0, panY: 0, isPanning: false, pointerId: null, startX: 0, startY: 0, startPanX: 0, startPanY: 0 };
+  const filter = { ...FILTER_DEFAULTS };
+  let filtersVisible = false;
+
+  function clampPan() {
+    if (zoom.scale <= ZOOM_MIN) { zoom.panX = 0; zoom.panY = 0; return; }
+    const vW = viewEl.clientWidth,  vH = viewEl.clientHeight;
+    const bW = imgEl.offsetWidth,   bH = imgEl.offsetHeight;
+    if (!vW || !vH || !bW || !bH)  { zoom.panX = 0; zoom.panY = 0; return; }
+    const maxX = Math.max(0, (bW * zoom.scale - vW) / 2);
+    const maxY = Math.max(0, (bH * zoom.scale - vH) / 2);
+    zoom.panX = Math.max(-maxX, Math.min(maxX, zoom.panX));
+    zoom.panY = Math.max(-maxY, Math.min(maxY, zoom.panY));
+  }
+
+  function updateZoomBtns() {
+    if (zoomInBtn)    zoomInBtn.disabled    = zoom.scale >= ZOOM_MAX - 0.001;
+    if (zoomOutBtn)   zoomOutBtn.disabled   = zoom.scale <= ZOOM_MIN + 0.001;
+    if (zoomResetBtn) zoomResetBtn.disabled = zoom.scale <= ZOOM_MIN + 0.001;
+  }
+
+  function applyTransform() {
+    clampPan();
+    imgEl.style.transform = `translate(${zoom.panX}px, ${zoom.panY}px) scale(${zoom.scale})`;
+    viewEl.classList.toggle('is-zoomed', zoom.scale > ZOOM_MIN + 0.001);
+    updateZoomBtns();
+  }
+
+  function applyFilter() {
+    imgEl.style.filter = [
+      `brightness(${filter.brightness}%)`,
+      `contrast(${filter.contrast}%)`,
+      `saturate(${filter.saturation}%)`,
+      `grayscale(${filter.grayscale}%)`,
+      `invert(${filter.invert}%)`,
+    ].join(' ');
+  }
+
+  function syncFilterControls() {
+    if (brightnessEl) brightnessEl.value = String(filter.brightness);
+    if (contrastEl)   contrastEl.value   = String(filter.contrast);
+    if (saturationEl) saturationEl.value = String(filter.saturation);
+    if (grayscaleEl)  grayscaleEl.value  = String(filter.grayscale);
+    if (invertEl)     invertEl.value     = String(filter.invert);
+  }
+
+  function refreshFilters() {
+    const r = (el, def) => { const n = Number(el && el.value); return Number.isFinite(n) ? n : def; };
+    filter.brightness = r(brightnessEl, FILTER_DEFAULTS.brightness);
+    filter.contrast   = r(contrastEl,   FILTER_DEFAULTS.contrast);
+    filter.saturation = r(saturationEl, FILTER_DEFAULTS.saturation);
+    filter.grayscale  = r(grayscaleEl,  FILTER_DEFAULTS.grayscale);
+    filter.invert     = r(invertEl,     FILTER_DEFAULTS.invert);
+    applyFilter();
+  }
+
+  function resetFilters() { Object.assign(filter, FILTER_DEFAULTS); syncFilterControls(); applyFilter(); }
+
+  function setZoom(next) {
+    zoom.scale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, next));
+    if (zoom.scale <= ZOOM_MIN + 0.001) { zoom.panX = 0; zoom.panY = 0; }
+    applyTransform();
+  }
+
+  function setFiltersVisible(v) {
+    filtersVisible = !!v;
+    if (filterPanel) filterPanel.hidden = !filtersVisible;
+    if (adjustBtn) { adjustBtn.setAttribute('aria-pressed', String(filtersVisible)); adjustBtn.classList.toggle('is-active', filtersVisible); }
+  }
+
+  function endPan(pid) {
+    if (!zoom.isPanning || (pid != null && zoom.pointerId !== pid)) return;
+    const captured = zoom.pointerId;
+    zoom.isPanning = false; zoom.pointerId = null;
+    if (captured != null) try { viewEl.releasePointerCapture(captured); } catch (_) {}
+  }
+
+  viewEl.addEventListener('wheel', e => {
+    if (!imgEl.getAttribute('src') || (e.target && e.target.closest('[data-iiif]'))) return;
+    e.preventDefault();
+    setZoom(zoom.scale * (e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP));
+  }, { passive: false });
+
+  viewEl.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || zoom.scale <= ZOOM_MIN + 0.001 || (e.target && e.target.closest('[data-iiif]'))) return;
+    e.preventDefault();
+    zoom.isPanning = true; zoom.pointerId = e.pointerId;
+    zoom.startX = e.clientX; zoom.startY = e.clientY;
+    zoom.startPanX = zoom.panX; zoom.startPanY = zoom.panY;
+    try { viewEl.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+
+  viewEl.addEventListener('pointermove', e => {
+    if (!zoom.isPanning || e.pointerId !== zoom.pointerId) return;
+    e.preventDefault();
+    zoom.panX = zoom.startPanX + (e.clientX - zoom.startX);
+    zoom.panY = zoom.startPanY + (e.clientY - zoom.startY);
+    applyTransform();
+  });
+
+  viewEl.addEventListener('pointerup',     e => endPan(e.pointerId));
+  viewEl.addEventListener('pointercancel', e => endPan(e.pointerId));
+  imgEl.addEventListener('load', applyTransform);
+
+  if (zoomInBtn)    zoomInBtn.addEventListener('click',    e => { e.preventDefault(); setZoom(zoom.scale * ZOOM_STEP); });
+  if (zoomOutBtn)   zoomOutBtn.addEventListener('click',   e => { e.preventDefault(); setZoom(zoom.scale / ZOOM_STEP); });
+  if (zoomResetBtn) zoomResetBtn.addEventListener('click', e => { e.preventDefault(); setZoom(ZOOM_MIN); });
+  if (adjustBtn)    adjustBtn.addEventListener('click',    e => { e.preventDefault(); setFiltersVisible(!filtersVisible); });
+  if (filterResetBtn) filterResetBtn.addEventListener('click', e => { e.preventDefault(); resetFilters(); });
+
+  [brightnessEl, contrastEl, saturationEl, grayscaleEl, invertEl].forEach(el => {
+    if (!el) return;
+    el.addEventListener('input',  refreshFilters);
+    el.addEventListener('change', refreshFilters);
+  });
+
+  applyTransform();
+  applyFilter();
+}
+
+async function renderLunaImageDirect(entityUrn, slotEl) {
+  if (!slotEl) return;
+  slotEl.innerHTML = '<p class="placeholder">Loading image…</p>';
+
+  const { iiifImageUrl, caption, lunaLandingUrl, iiifManifestUrl } = await fetchImageIdData(entityUrn);
+
+  if (!slotEl.isConnected) return;
+
+  if (!iiifImageUrl) {
+    slotEl.innerHTML = '<p class="placeholder">No image available.</p>';
+    return;
+  }
+
+  if (!imageModalState.captionByImageUrn.has(entityUrn)) {
+    imageModalState.captionByImageUrn.set(entityUrn, caption || '');
+    imageModalState.lunaLandingByImageUrn.set(entityUrn, lunaLandingUrl || '');
+    imageModalState.iiifManifestByImageUrn.set(entityUrn, iiifManifestUrl || '');
+    imageModalState.iiifImageByImageUrn.set(entityUrn, iiifImageUrl || '');
+  }
+
+  const thumbUrl = buildIiifThumbnailUrl(iiifImageUrl, 1200);
+
+  slotEl.innerHTML = `<div class="luna-image-direct-view">
+  <div class="iiif-viewer-zoom-controls">
+    <button class="iiif-viewer-zoom-btn" data-iiif="zoom-out" disabled aria-label="Zoom out" title="Zoom out">−</button>
+    <button class="iiif-viewer-zoom-btn" data-iiif="zoom-in" aria-label="Zoom in" title="Zoom in">+</button>
+    <button class="iiif-viewer-zoom-btn" data-iiif="zoom-reset" disabled aria-label="Reset zoom" title="Reset zoom">100%</button>
+    <button class="iiif-viewer-zoom-btn" data-iiif="toggle-filters" aria-pressed="false" aria-label="Image adjustments" title="Image adjustments">Adjust</button>
+  </div>
+  <div class="iiif-viewer-filter-controls" hidden>
+    <div class="iiif-viewer-filter-grid">
+      <label class="iiif-viewer-filter-item"><span title="Brightness">B</span><input type="range" min="50" max="200" step="5" value="100" data-iiif="filter-brightness"></label>
+      <label class="iiif-viewer-filter-item"><span title="Contrast">C</span><input type="range" min="50" max="200" step="5" value="100" data-iiif="filter-contrast"></label>
+      <label class="iiif-viewer-filter-item"><span title="Saturation">S</span><input type="range" min="0" max="200" step="5" value="100" data-iiif="filter-saturation"></label>
+      <label class="iiif-viewer-filter-item"><span title="Grayscale">G</span><input type="range" min="0" max="100" step="5" value="0" data-iiif="filter-grayscale"></label>
+      <label class="iiif-viewer-filter-item"><span title="Invert">I</span><input type="range" min="0" max="100" step="5" value="0" data-iiif="filter-invert"></label>
+    </div>
+    <button class="iiif-viewer-filter-reset" data-iiif="filter-reset">Reset</button>
+  </div>
+  <img class="iiif-viewer-img" src="${escAttr(thumbUrl)}" alt="${escAttr(caption || '')}">
+</div>`;
+
+  createIiifViewer(slotEl.querySelector('.luna-image-direct-view'));
+}
 
 async function resolveImageUrl(imgDict) {
   const urn = typeof imgDict === 'string' ? imgDict : imgDict.urn;
@@ -5561,6 +5896,29 @@ async function fetchDepictedWhereWithSpaceFallback(shortId) {
   };
 }
 
+async function fetchLunaImageMapData(imageUrn) {
+  const triples = await fetchTriplesForUrnById(imageUrn);
+  if (!triples) return { detailLevel: 'space', items: [] };
+  const depictsVals = (triples['urn:p-lod:id:depicts'] || []).filter(v => sanitizeValue(v));
+  if (!depictsVals.length) return { detailLevel: 'space', items: [] };
+
+  const items = [];
+  for (const depictsUrn of depictsVals) {
+    const depictsShortId = extractShortId(depictsUrn);
+    try {
+      const r = await fetch(`${API_BASE}/geojson/${encodeURIComponent(depictsShortId)}`);
+      if (r.ok) {
+        const gjData = await r.json();
+        const gjStr = JSON.stringify(gjData);
+        if (gjStr && gjStr !== 'null' && gjStr !== '"None"') {
+          items.push({ urn: depictsUrn, label: depictsShortId, geojson: gjStr });
+        }
+      }
+    } catch (_) { /* ignore */ }
+  }
+  return { detailLevel: 'space', items };
+}
+
 // ── Navigation ────────────────────────────────────────────────────────────────
 
 function navigate(id) {
@@ -5592,6 +5950,9 @@ async function loadEntity(rawId) {
     const r = await fetch(`${API_BASE}/id/${encodeURIComponent(shortId)}`);
     if (r.ok) triples = flattenTriples(await r.json());
   } catch (_) { /* ignore */ }
+
+  // Warm the triples cache so handlers that call fetchTriplesForUrnById(id) avoid a duplicate fetch
+  if (Object.keys(triples).length) triplesByUrnCache.set(id, triples);
 
   const typeUrn   = (triples['http://www.w3.org/1999/02/22-rdf-syntax-ns#type'] || [])[0] || '';
   const rawLabel  = (triples['http://www.w3.org/2000/01/rdf-schema#label'] || [])[0] || '';
@@ -5652,6 +6013,13 @@ async function loadEntity(rawId) {
 
   hierarchyState = hierarchyRes.status === 'fulfilled' ? hierarchyRes.value : null;
   rerenderHierarchy();
+
+  if (currentResourceProfile === 'luna-image') {
+    const hierPos  = getPanePositionForContent(currentPaneLayout, PANE_CONTENT_TYPES.HIERARCHY_PLACEHOLDER);
+    const hierEls  = hierPos ? getPaneElements(hierPos) : null;
+    if (hierEls && hierEls.label) hierEls.label.textContent = 'Luna Media Info';
+    if (hierEls && hierEls.slot)  void renderLunaImageMetadataPane(id, hierEls.slot);
+  }
 
   // Build the self-boundary item for spatial entities
   let selfItem = await resourceHandler.buildSelfMapItem(id, shortId, shortId, selfGjStr);
