@@ -5427,6 +5427,7 @@ function wireImageHoverEvents(containerEl) {
     if (urn) registerFirstImageAssociation(urn, el);
 
     el.addEventListener('mouseenter', e => {
+      if (imageModalState.isOpen) return;
       const shouldPan = shouldPanFromEvent(e);
       scheduleImageHoverIntent(el, () => {
         if (!el.matches(':hover')) return;
@@ -5436,6 +5437,7 @@ function wireImageHoverEvents(containerEl) {
       });
     });
     el.addEventListener('mouseleave', () => {
+      if (imageModalState.isOpen) return;
       cancelImageHoverIntent(el);
       endImageTileHighlight(el);
       paneEvents.emit(PANE_EVENT_ENTITY_CLEAR, { urn });
@@ -5506,6 +5508,7 @@ function wireSpatialImageHoverEvents(containerEl) {
     });
 
     el.addEventListener('mouseenter', e => {
+      if (imageModalState.isOpen) return;
       const shouldPan = shouldPanFromEvent(e);
       const token = ++hoverIntentToken;
       scheduleImageHoverIntent(el, async () => {
@@ -5521,6 +5524,7 @@ function wireSpatialImageHoverEvents(containerEl) {
       });
     });
     el.addEventListener('mouseleave', () => {
+      if (imageModalState.isOpen) return;
       hoverIntentToken += 1;
       cancelImageHoverIntent(el);
       endImageTileHighlight(el);
