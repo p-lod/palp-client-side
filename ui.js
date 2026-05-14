@@ -19,6 +19,8 @@ const POMPEIAN_WALL_PAINTING_STYLE_TYPE = 'urn:p-lod:id:pompeian-wall-painting-s
 const SPACE_CHARACTERIZATION_TYPE = 'urn:p-lod:id:space-characterization';
 const LUNA_IMAGE_TYPE = 'urn:p-lod:id:luna-image';
 const FEATURE_TYPE = 'urn:p-lod:id:feature';
+const SPACE_TYPE = 'urn:p-lod:id:space';
+const GARDEN_TYPE = 'urn:p-lod:id:garden';
 
 // Types that have spatial geometry and spatial children
 const SPATIAL_TYPES = new Set([
@@ -27,6 +29,18 @@ const SPATIAL_TYPES = new Set([
   'urn:p-lod:id:property',
   'urn:p-lod:id:street',
   'urn:p-lod:id:insula',
+  'urn:p-lod:id:space',
+  'urn:p-lod:id:garden',
+  'urn:p-lod:id:feature',
+]);
+
+// Sub-region spatial types whose map should also show the immediate
+// spatial ancestor as a blue contextual outline. City and region are
+// intentionally excluded — they sit at/above the top of this scope.
+const ANCESTOR_OUTLINE_TYPES = new Set([
+  'urn:p-lod:id:insula',
+  'urn:p-lod:id:street',
+  'urn:p-lod:id:property',
   'urn:p-lod:id:space',
   'urn:p-lod:id:garden',
   'urn:p-lod:id:feature',
@@ -1469,6 +1483,20 @@ const FEATURE_RESOURCE_HANDLER = createResourceHandler({
   imagesPaneBehavior: IMAGE_PANE_BEHAVIOR.SPATIAL_PRELOAD,
   promoteSelfGeometryToPrimaryLayer: true,
 });
+const SPACE_RESOURCE_HANDLER = createResourceHandler({
+  key: 'space',
+  profile: 'spatial',
+  isSpatial: true,
+  imagesPaneBehavior: IMAGE_PANE_BEHAVIOR.SPATIAL_PRELOAD,
+  promoteSelfGeometryToPrimaryLayer: true,
+});
+const GARDEN_RESOURCE_HANDLER = createResourceHandler({
+  key: 'garden',
+  profile: 'spatial',
+  isSpatial: true,
+  imagesPaneBehavior: IMAGE_PANE_BEHAVIOR.SPATIAL_PRELOAD,
+  promoteSelfGeometryToPrimaryLayer: true,
+});
 
 const LUNA_IMAGE_RESOURCE_HANDLER = createResourceHandler({
   key: 'luna-image',
@@ -1482,6 +1510,8 @@ const RESOURCE_TYPE_HANDLERS = Object.freeze({
   [SPACE_CHARACTERIZATION_TYPE]: SPACE_CHARACTERIZATION_RESOURCE_HANDLER,
   [LUNA_IMAGE_TYPE]: LUNA_IMAGE_RESOURCE_HANDLER,
   [FEATURE_TYPE]: FEATURE_RESOURCE_HANDLER,
+  [SPACE_TYPE]: SPACE_RESOURCE_HANDLER,
+  [GARDEN_TYPE]: GARDEN_RESOURCE_HANDLER,
 });
 
 const RESOURCE_FAMILY_HANDLERS = Object.freeze({
@@ -1683,6 +1713,7 @@ let ancestorOutlineLayerCache = new Map(); // ancestorUrn → Leaflet layer
 let pendingAncestorByEntityUrn = new Map(); // entityUrn → Promise<ancestorUrn|null>
 let pendingAncestorOutlineLayerByUrn = new Map(); // ancestorUrn → Promise<LeafletLayer|null>
 let activeAncestorOutlineUrn = null;
+let pageAncestorOutlineUrn = null;
 let currentHoveredEntityUrn = null;
 let isOptionKeyDown = false;
 let isCtrlKeyDown = false;
@@ -1864,6 +1895,17 @@ const INFO_CHIP_PREVIEW_STYLE = Object.freeze({
   fillColor: '#4cc38a',
   fillOpacity: 0.28,
   opacity: 1,
+});
+
+// Used when the current entity's own geometry is rendered as the primary
+// (red) layer (space, garden, feature, pompeian-wall-painting-style,
+// space-characterization). A single large polygon needs more opacity to
+// read as "filled" than the tiled child polygons drawn with mainLayerStyle.
+const PROMOTED_SELF_STYLE = Object.freeze({
+  color: '#d60000',
+  weight: 3,
+  fillColor: '#ff1f1f',
+  fillOpacity: 0.32,
 });
 
 const PINNED_GEOJSON_STYLE = Object.freeze({
@@ -4020,6 +4062,7 @@ function clearMapLayers() {
   pendingAncestorByEntityUrn.clear();
   pendingAncestorOutlineLayerByUrn.clear();
   activeAncestorOutlineUrn = null;
+  pageAncestorOutlineUrn = null;
   currentHoveredEntityUrn = null;
 }
 
@@ -4465,6 +4508,29 @@ function hideActiveAncestorOutline() {
 
   if (layerGroup.hasLayer(layer)) layerGroup.removeLayer(layer);
   activeAncestorOutlineUrn = null;
+}
+
+// Page-baseline ancestor outline: drawn for the current entity when its
+// type is in ANCESTOR_OUTLINE_TYPES. Independent of the hover-driven
+// outline so that hover/clear events don't wipe it.
+function setPageAncestorOutline(ancestorUrn, layer) {
+  if (!ancestorUrn || !layer || !layerGroup) return;
+  if (pageAncestorOutlineUrn && pageAncestorOutlineUrn !== ancestorUrn) {
+    const prev = ancestorOutlineLayerCache.get(pageAncestorOutlineUrn);
+    if (prev && layerGroup.hasLayer(prev)) layerGroup.removeLayer(prev);
+  }
+  if (!layerGroup.hasLayer(layer)) layer.addTo(layerGroup);
+  layer.bringToBack();
+  pageAncestorOutlineUrn = ancestorUrn;
+}
+
+function clearPageAncestorOutline() {
+  if (!pageAncestorOutlineUrn) return;
+  if (layerGroup) {
+    const layer = ancestorOutlineLayerCache.get(pageAncestorOutlineUrn);
+    if (layer && layerGroup.hasLayer(layer)) layerGroup.removeLayer(layer);
+  }
+  pageAncestorOutlineUrn = null;
 }
 
 async function showAncestorOutlineForHoveredEntity(entityUrn) {
@@ -5833,7 +5899,7 @@ function initMapHoverListeners() {
   });
 }
 
-function renderMap(selfItem, childItems, isSpatial, conceptDetailLevel, slotEl, labelEl) {
+function renderMap(selfItem, childItems, isSpatial, conceptDetailLevel, slotEl, labelEl, ancestorOutline, selfPromoted) {
   ensureMapInitialized(slotEl);
   initMapUrlSync();
   if (!leafletMap || !layerGroup) return;
@@ -5847,11 +5913,12 @@ function renderMap(selfItem, childItems, isSpatial, conceptDetailLevel, slotEl, 
     color: '#d60000',
     weight: 3,
     fillColor: '#ff1f1f',
-    fillOpacity: 0.16,
+    fillOpacity: 0.25,
   };
 
   if (selfItem) {
-    const layer = addGeoJsonLayer(selfItem, selfStyle, false);
+    const style = selfPromoted ? PROMOTED_SELF_STYLE : selfStyle;
+    const layer = addGeoJsonLayer(selfItem, style, !!selfPromoted);
     if (layer) {
       try { const b = layer.getBounds(); if (b.isValid()) bounds.push(b); } catch (_) {}
     }
@@ -5868,6 +5935,12 @@ function renderMap(selfItem, childItems, isSpatial, conceptDetailLevel, slotEl, 
     let combined = bounds[0];
     for (let i = 1; i < bounds.length; i++) combined = combined.extend(bounds[i]);
     leafletMap.fitBounds(combined, { padding: [24, 24] });
+  }
+
+  if (ancestorOutline && ancestorOutline.layer && ancestorOutline.ancestorUrn) {
+    setPageAncestorOutline(ancestorOutline.ancestorUrn, ancestorOutline.layer);
+  } else {
+    clearPageAncestorOutline();
   }
 
   applyPendingMapViewOverride();
@@ -5996,8 +6069,17 @@ async function loadEntity(rawId) {
     geojson: selfGjStr,
   };
 
-  // Step 2: parallel fetches — images (spatial only) + map/concept children + hierarchy
-  const [imagesRes, mapRes, hierarchyRes] = await Promise.allSettled([
+  const ancestorOutlinePromise = ANCESTOR_OUTLINE_TYPES.has(typeUrn)
+    ? (async () => {
+        const ancestorUrn = await resolveAncestorForEntity(id);
+        if (!ancestorUrn) return null;
+        const layer = await ensureAncestorOutlineLayer(ancestorUrn);
+        return layer ? { ancestorUrn, layer } : null;
+      })()
+    : Promise.resolve(null);
+
+  // Step 2: parallel fetches — images (spatial only) + map/concept children + hierarchy + ancestor outline
+  const [imagesRes, mapRes, hierarchyRes, ancestorOutlineRes] = await Promise.allSettled([
     resourceHandler.getImagesPromise(shortId),
     resourceHandler.getMapDataPromise(shortId),
     hierarchyProfile
@@ -6006,6 +6088,7 @@ async function loadEntity(rawId) {
           return buildHierarchyState(hierarchyProfile, currentHierarchyNode, { seedChildren });
         })()
       : Promise.resolve(null),
+    ancestorOutlinePromise,
   ]);
 
   let childItems = [];
@@ -6035,22 +6118,22 @@ async function loadEntity(rawId) {
   }
 
   // Build the self-boundary item for spatial entities
-  let selfItem = await resourceHandler.buildSelfMapItem(id, shortId, shortId, selfGjStr);
-  let mapChildItems = childItems;
-  if (resourceHandler.promoteSelfGeometryToPrimaryLayer && selfItem) {
-    mapChildItems = [selfItem, ...childItems];
-    selfItem = null;
-  }
+  const selfItem = await resourceHandler.buildSelfMapItem(id, shortId, shortId, selfGjStr);
+  const selfPromoted = !!(resourceHandler.promoteSelfGeometryToPrimaryLayer && selfItem);
+
+  const ancestorOutline = ancestorOutlineRes.status === 'fulfilled' ? ancestorOutlineRes.value : null;
 
   const mapPosition = getPanePositionForContent(currentPaneLayout, PANE_CONTENT_TYPES.MAP);
   const mapPaneEls = mapPosition ? getPaneElements(mapPosition) : null;
   renderMap(
     selfItem,
-    mapChildItems,
+    childItems,
     isSpatial,
     conceptDetailLevel,
     mapPaneEls ? mapPaneEls.slot : null,
-    mapPaneEls ? mapPaneEls.label : null
+    mapPaneEls ? mapPaneEls.label : null,
+    ancestorOutline,
+    selfPromoted
   );
 }
 
