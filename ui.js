@@ -18,6 +18,7 @@ const DEFAULT_ID = 'urn:p-lod:id:pompeii';
 const POMPEIAN_WALL_PAINTING_STYLE_TYPE = 'urn:p-lod:id:pompeian-wall-painting-style';
 const SPACE_CHARACTERIZATION_TYPE = 'urn:p-lod:id:space-characterization';
 const LUNA_IMAGE_TYPE = 'urn:p-lod:id:luna-image';
+const FEATURE_TYPE = 'urn:p-lod:id:feature';
 
 // Types that have spatial geometry and spatial children
 const SPATIAL_TYPES = new Set([
@@ -1461,6 +1462,13 @@ const SPACE_CHARACTERIZATION_RESOURCE_HANDLER = createResourceHandler({
   forceSelfGeojsonFromEndpoint: true,
   hierarchySeedSource: 'geojson-features',
 });
+const FEATURE_RESOURCE_HANDLER = createResourceHandler({
+  key: 'feature',
+  profile: 'spatial',
+  isSpatial: true,
+  imagesPaneBehavior: IMAGE_PANE_BEHAVIOR.SPATIAL_PRELOAD,
+  promoteSelfGeometryToPrimaryLayer: true,
+});
 
 const LUNA_IMAGE_RESOURCE_HANDLER = createResourceHandler({
   key: 'luna-image',
@@ -1473,6 +1481,7 @@ const RESOURCE_TYPE_HANDLERS = Object.freeze({
   [POMPEIAN_WALL_PAINTING_STYLE_TYPE]: WALL_PAINTING_STYLE_RESOURCE_HANDLER,
   [SPACE_CHARACTERIZATION_TYPE]: SPACE_CHARACTERIZATION_RESOURCE_HANDLER,
   [LUNA_IMAGE_TYPE]: LUNA_IMAGE_RESOURCE_HANDLER,
+  [FEATURE_TYPE]: FEATURE_RESOURCE_HANDLER,
 });
 
 const RESOURCE_FAMILY_HANDLERS = Object.freeze({
