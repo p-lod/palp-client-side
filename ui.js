@@ -13,7 +13,11 @@ function sanitizeValue(val) {
   return val;
 }
 
-const API_BASE   = 'https://api.p-lod.org';
+const API_BASE = (() => {
+  const override = new URLSearchParams(window.location.search).get('api-base');
+  if (override && override.trim()) return override.trim().replace(/\/+$/, '');
+  return 'https://api.p-lod.org';
+})();
 const DEFAULT_ID = 'urn:p-lod:id:pompeii';
 const POMPEIAN_WALL_PAINTING_STYLE_TYPE = 'urn:p-lod:id:pompeian-wall-painting-style';
 const SPACE_CHARACTERIZATION_TYPE = 'urn:p-lod:id:space-characterization';

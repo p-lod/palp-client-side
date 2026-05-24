@@ -225,7 +225,11 @@
     (function () {
       'use strict';
 
-      const API_BASE = 'https://api.p-lod.org';
+      const API_BASE = (() => {
+        const override = new URLSearchParams(window.location.search).get('api-base');
+        if (override && override.trim()) return override.trim().replace(/\/+$/, '');
+        return 'https://api.p-lod.org';
+      })();
       const SOURCE_TYPES = ['concept', 'region', 'insula', 'property'];
       const MAX_SUGGESTIONS = 16;
       const DEBOUNCE_MS = 120;
