@@ -843,14 +843,13 @@ function bindInfoActionableEntityHoverEvents(el, selector, urnAttrName, options 
 }
 
 async function fetchDepictsConcepts(shortId) {
-  try {
-    const r = await fetch(`${API_BASE}/depicts-concepts/${encodeURIComponent(shortId)}`);
-    if (!r.ok) return [];
-    const payload = await r.json();
-    return Array.isArray(payload) ? payload : [];
-  } catch (_) {
-    return [];
-  }
+  const payload = await cachedJsonGet(
+    depictsConceptsByShortIdCache,
+    pendingDepictsConceptsByShortId,
+    `${API_BASE}/depicts-concepts/${encodeURIComponent(shortId)}`,
+    { fallback: [] }
+  );
+  return Array.isArray(payload) ? payload : [];
 }
 
 async function fetchDepictedWhereForInfo(shortId) {
@@ -1086,14 +1085,13 @@ function addTypeaheadSuggestion(target, seenValues, value, shortId, type) {
 }
 
 async function fetchInstancesOfType(sourceType) {
-  try {
-    const r = await fetch(`${API_BASE}/instances-of/${encodeURIComponent(sourceType)}`);
-    if (!r.ok) return [];
-    const payload = await r.json();
-    return Array.isArray(payload) ? payload : [];
-  } catch (_) {
-    return [];
-  }
+  const payload = await cachedJsonGet(
+    instancesOfByTypeCache,
+    pendingInstancesOfByType,
+    `${API_BASE}/instances-of/${encodeURIComponent(sourceType)}`,
+    { fallback: [] }
+  );
+  return Array.isArray(payload) ? payload : [];
 }
 
 function rebuildTypeaheadIndex(instanceListsByType) {
@@ -1285,15 +1283,21 @@ function parsePaneLayout(raw) {
 }
 
 function fetchSpatialChildren(shortId) {
-  return fetch(`${API_BASE}/spatial-children/${encodeURIComponent(shortId)}`)
-    .then(r => r.ok ? r.json() : [])
-    .catch(() => []);
+  return cachedJsonGet(
+    spatialChildrenByShortIdCache,
+    pendingSpatialChildrenByShortId,
+    `${API_BASE}/spatial-children/${encodeURIComponent(shortId)}`,
+    { fallback: [] }
+  );
 }
 
 function fetchEntityImages(shortId) {
-  return fetch(`${API_BASE}/images/${encodeURIComponent(shortId)}`)
-    .then(r => r.ok ? r.json() : [])
-    .catch(() => []);
+  return cachedJsonGet(
+    imagesByShortIdCache,
+    pendingImagesByShortId,
+    `${API_BASE}/images/${encodeURIComponent(shortId)}`,
+    { fallback: [] }
+  );
 }
 
 function renderImagePaneHoverPreviewHint(slotEl) {
@@ -1308,10 +1312,8 @@ function extractEndpointShortId(urn) {
 async function buildSpatialSelfMapItem(entityUrn, shortId, label, selfGjStr, forceGeojsonEndpoint = false) {
   let gjStr = forceGeojsonEndpoint ? null : selfGjStr;
   if (!gjStr) {
-    try {
-      const r = await fetch(`${API_BASE}/geojson/${encodeURIComponent(shortId)}`);
-      if (r.ok) gjStr = JSON.stringify(await r.json());
-    } catch (_) { /* ignore */ }
+    const payload = await fetchGeoJsonByShortId(shortId);
+    if (payload !== null) gjStr = JSON.stringify(payload);
   }
 
   if (!gjStr || gjStr === 'None') return null;
@@ -2200,6 +2202,59 @@ const API_ID_RETRY_BASE_MS = 300;
 const API_ID_RETRY_MAX_MS = 4000;
 const triplesByUrnCache = new Map();
 const pendingTriplesByUrn = new Map();
+
+async function cachedJsonGet(cache, pendingCache, url, { fallback = null } = {}) {
+  if (cache.has(url)) return cache.get(url);
+  if (pendingCache.has(url)) return pendingCache.get(url);
+  const p = (async () => {
+    try {
+      const r = await fetch(url);
+      if (!r.ok) return fallback;
+      const data = await r.json();
+      cache.set(url, data);
+      return data;
+    } catch (_) {
+      return fallback;
+    } finally {
+      pendingCache.delete(url);
+    }
+  })();
+  pendingCache.set(url, p);
+  return p;
+}
+
+const geojsonByShortIdCache = new Map();
+const pendingGeojsonByShortId = new Map();
+const spatialChildrenByShortIdCache = new Map();
+const pendingSpatialChildrenByShortId = new Map();
+const spatialAncestorsByShortIdCache = new Map();
+const pendingSpatialAncestorsByShortId = new Map();
+const imagesByShortIdCache = new Map();
+const pendingImagesByShortId = new Map();
+const depictsConceptsByShortIdCache = new Map();
+const pendingDepictsConceptsByShortId = new Map();
+const instancesOfByTypeCache = new Map();
+const pendingInstancesOfByType = new Map();
+const depictedWhereCache = new Map();
+const pendingDepictedWhere = new Map();
+const hierarchyItemsCache = new Map();
+const pendingHierarchyItems = new Map();
+
+function fetchGeoJsonByShortId(shortId) {
+  return cachedJsonGet(
+    geojsonByShortIdCache,
+    pendingGeojsonByShortId,
+    `${API_BASE}/geojson/${encodeURIComponent(shortId)}`
+  );
+}
+
+function fetchSpatialAncestorsRaw(shortId) {
+  return cachedJsonGet(
+    spatialAncestorsByShortIdCache,
+    pendingSpatialAncestorsByShortId,
+    `${API_BASE}/spatial-ancestors/${encodeURIComponent(shortId)}`
+  );
+}
 
 const apiIdFetchLimit = (() => {
   const MAX = 8;
@@ -4061,7 +4116,6 @@ function clearMapLayers() {
   geojsonFeaturePayloadByUrn.clear();
   geojsonFeatureUrnsByPinUrn.clear();
   spatialHoverCache.clear();
-  ancestorByEntityUrnCache.clear();
   ancestorOutlineLayerCache.clear();
   pendingAncestorByEntityUrn.clear();
   pendingAncestorOutlineLayerByUrn.clear();
@@ -4244,10 +4298,8 @@ async function ensurePinnedGeojsonFeatures(rawPinUrn) {
   const pending = (async () => {
     try {
       const shortId = extractShortId(pinUrn);
-      const r = await fetch(`${API_BASE}/geojson/${encodeURIComponent(shortId)}`);
-      if (!r.ok) return cachePinnedGeojsonFeatures(pinUrn, []);
-
-      const payload = await r.json();
+      const payload = await fetchGeoJsonByShortId(shortId);
+      if (payload === null) return cachePinnedGeojsonFeatures(pinUrn, []);
       const geojson = payload && payload.geojson ? payload.geojson : payload;
       const normalized = normalizeGeoJsonFeatures(geojson, { fallbackUrn: pinUrn });
       return cachePinnedGeojsonFeatures(pinUrn, normalized);
@@ -4339,10 +4391,8 @@ async function ensureInfoChipPreviewGeoJson(urn) {
   const pending = (async () => {
     try {
       const shortId = extractShortId(urn);
-      const r = await fetch(`${API_BASE}/geojson/${encodeURIComponent(shortId)}`);
-      if (!r.ok) return null;
-
-      const payload = await r.json();
+      const payload = await fetchGeoJsonByShortId(shortId);
+      if (payload === null) return null;
       const geojson = payload && payload.geojson ? payload.geojson : payload;
       infoChipPreviewGeoJsonCache.set(urn, geojson || null);
       return geojson || null;
@@ -4444,10 +4494,7 @@ async function resolveAncestorForEntity(entityUrn) {
   const pending = (async () => {
     try {
       const shortId = extractShortId(entityUrn);
-      const r = await fetch(`${API_BASE}/spatial-ancestors/${encodeURIComponent(shortId)}`);
-      if (!r.ok) return null;
-
-      const ancestors = await r.json();
+      const ancestors = await fetchSpatialAncestorsRaw(shortId);
       if (!Array.isArray(ancestors)) return null;
 
       // /spatial-ancestors is child-first. Use the first true ancestor
@@ -4478,10 +4525,8 @@ async function ensureAncestorOutlineLayer(ancestorUrn) {
   const pending = (async () => {
     try {
       const shortId = extractShortId(ancestorUrn);
-      const r = await fetch(`${API_BASE}/geojson/${encodeURIComponent(shortId)}`);
-      if (!r.ok) return null;
-
-      const payload = await r.json();
+      const payload = await fetchGeoJsonByShortId(shortId);
+      if (payload === null) return null;
       const parsed = parseGeoJson(payload && payload.geojson ? payload.geojson : payload);
       if (!parsed) return null;
 
@@ -4634,14 +4679,13 @@ function canHierarchyNodeFetchChildren(state, urn) {
 }
 
 async function fetchHierarchyItems(endpoint) {
-  try {
-    const r = await fetch(endpoint);
-    if (!r.ok) return [];
-    const payload = await r.json();
-    return Array.isArray(payload) ? payload : [];
-  } catch (_) {
-    return [];
-  }
+  const payload = await cachedJsonGet(
+    hierarchyItemsCache,
+    pendingHierarchyItems,
+    endpoint,
+    { fallback: [] }
+  );
+  return Array.isArray(payload) ? payload : [];
 }
 
 async function fetchConceptualHierarchyAncestors(urn) {
@@ -4890,15 +4934,10 @@ async function ensureHierarchyNodeGeojson(urn) {
   if (!node) return null;
   if (node.geojson && node.geojson !== 'None') return node.geojson;
 
-  try {
-    const r = await fetch(`${API_BASE}/geojson/${encodeURIComponent(extractShortId(urn))}`);
-    if (!r.ok) return null;
-    const payload = await r.json();
-    node.geojson = payload && payload.geojson ? payload.geojson : payload;
-    return node.geojson;
-  } catch (_) {
-    return null;
-  }
+  const payload = await fetchGeoJsonByShortId(extractShortId(urn));
+  if (payload === null) return null;
+  node.geojson = payload && payload.geojson ? payload.geojson : payload;
+  return node.geojson;
 }
 
 async function previewHierarchyNode(urn) {
@@ -5553,9 +5592,7 @@ async function resolveFeatureToLayer(featureUrn) {
 
   try {
     const shortId = extractShortId(featureUrn);
-    const r = await fetch(`${API_BASE}/spatial-ancestors/${encodeURIComponent(shortId)}`);
-    if (!r.ok) { spatialHoverCache.set(featureUrn, null); return null; }
-    const ancestors = await r.json();
+    const ancestors = await fetchSpatialAncestorsRaw(shortId);
     if (Array.isArray(ancestors)) {
       // This resolver maps image features to a highlight target only.
       // It must not be coupled to map layer stacking behavior.
@@ -5961,16 +5998,13 @@ function renderMap(selfItem, childItems, isSpatial, conceptDetailLevel, slotEl, 
 }
 
 async function fetchDepictedWhereAtDetailLevel(shortId, detailLevel) {
-  try {
-    const r = await fetch(
-      `${API_BASE}/depicted-where/${encodeURIComponent(shortId)}?level_of_detail=${encodeURIComponent(detailLevel)}`
-    );
-    if (!r.ok) return null;
-    const payload = await r.json();
-    return Array.isArray(payload) ? payload : [];
-  } catch (_) {
-    return null;
-  }
+  const payload = await cachedJsonGet(
+    depictedWhereCache,
+    pendingDepictedWhere,
+    `${API_BASE}/depicted-where/${encodeURIComponent(shortId)}?level_of_detail=${encodeURIComponent(detailLevel)}`
+  );
+  if (payload === null) return null;
+  return Array.isArray(payload) ? payload : [];
 }
 
 async function fetchDepictedWhereWithSpaceFallback(shortId) {
@@ -5995,16 +6029,13 @@ async function fetchLunaImageMapData(imageUrn) {
   const items = [];
   for (const depictsUrn of depictsVals) {
     const depictsShortId = extractShortId(depictsUrn);
-    try {
-      const r = await fetch(`${API_BASE}/geojson/${encodeURIComponent(depictsShortId)}`);
-      if (r.ok) {
-        const gjData = await r.json();
-        const gjStr = JSON.stringify(gjData);
-        if (gjStr && gjStr !== 'null' && gjStr !== '"None"') {
-          items.push({ urn: depictsUrn, label: depictsShortId, geojson: gjStr });
-        }
+    const gjData = await fetchGeoJsonByShortId(depictsShortId);
+    if (gjData !== null) {
+      const gjStr = JSON.stringify(gjData);
+      if (gjStr && gjStr !== 'null' && gjStr !== '"None"') {
+        items.push({ urn: depictsUrn, label: depictsShortId, geojson: gjStr });
       }
-    } catch (_) { /* ignore */ }
+    }
   }
   return { detailLevel: 'space', items };
 }
