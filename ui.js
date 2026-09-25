@@ -1538,6 +1538,17 @@ function resolveResourceHandler(typeUrn) {
     || RESOURCE_FAMILY_HANDLERS.default;
 }
 
+// A resource can have several rdf:type values (e.g. owl:Class + concept, artwork-component + panel)
+// and the API does not guarantee their order. Prefer a type with a specific handler, then one with
+// a non-default family (spatial/concept), then the first one.
+function pickPrimaryTypeUrn(triples) {
+  const types = (triples && triples['http://www.w3.org/1999/02/22-rdf-syntax-ns#type']) || [];
+  return types.find(t => RESOURCE_TYPE_HANDLERS[t])
+    || types.find(t => resolveResourceHandlerFamily(t) !== 'default')
+    || types[0]
+    || '';
+}
+
 function resolveResourceProfile(typeUrn) {
   return resolveResourceHandler(typeUrn).profile;
 }
@@ -5105,7 +5116,7 @@ async function renderInfo(triples, el, shortId = '', resourceProfile = 'default'
 
   const rawLabel = (triples['http://www.w3.org/2000/01/rdf-schema#label'] || [])[0] || '';
   const label   = getDisplayLabelOrFallback(rawLabel, shortId);
-  const typeUrn = (triples['http://www.w3.org/1999/02/22-rdf-syntax-ns#type'] || [])[0] || '';
+  const typeUrn = pickPrimaryTypeUrn(triples);
   const chipSectionConfigs = getInfoChipSectionConfigs(shortId, resourceProfile, typeUrn, entityUrn);
   const suppressedPredicateTails = getInfoChipSuppressedPredicateTails(chipSectionConfigs);
 
@@ -6075,7 +6086,7 @@ async function loadEntity(rawId) {
   // Warm the triples cache so handlers that call fetchTriplesForUrnById(id) avoid a duplicate fetch
   if (Object.keys(triples).length) triplesByUrnCache.set(id, triples);
 
-  const typeUrn   = (triples['http://www.w3.org/1999/02/22-rdf-syntax-ns#type'] || [])[0] || '';
+  const typeUrn   = pickPrimaryTypeUrn(triples);
   const rawLabel  = (triples['http://www.w3.org/2000/01/rdf-schema#label'] || [])[0] || '';
   const label     = getDisplayLabelOrFallback(rawLabel, shortId);
   const bestImageUrns = getBestImageUrnsFromTriples(triples);
